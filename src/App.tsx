@@ -2,13 +2,13 @@ import {
   ChangeEvent,
   DragEvent,
   PointerEvent,
-  WheelEvent,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   colorToHex,
@@ -38,7 +38,7 @@ type ImageView = {
 };
 
 const minimumScale = 0.5;
-const maximumScale = 8;
+const maximumScale = 16;
 
 type PixelCleanProject = {
   kind: "pixel-clean-project";
@@ -131,6 +131,8 @@ function ImagePane({
   onPaintProtection,
 }: ImagePaneProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef<(deltaY: number) => void>(() => undefined);
   const dragStartRef = useRef<{
     pointerId: number;
     clientX: number;
@@ -139,6 +141,15 @@ function ImagePane({
     offsetY: number;
   } | null>(null);
   const brushPointRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+
+  zoomRef.current = (deltaY) => {
+    if (!image) return;
+    const nextScale = Math.min(
+      maximumScale,
+      Math.max(minimumScale, view.scale * (deltaY > 0 ? 0.9 : 1.1)),
+    );
+    onViewChange({ ...view, scale: nextScale });
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -161,6 +172,18 @@ function ImagePane({
     }
   }, [image, interactionMode, protectedMask]);
 
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane || !image) return;
+    const handleCanvasWheel = (event: globalThis.WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      zoomRef.current(event.deltaY);
+    };
+    pane.addEventListener("wheel", handleCanvasWheel, { passive: false });
+    return () => pane.removeEventListener("wheel", handleCanvasWheel);
+  }, [image]);
+
   const getImagePosition = (event: PointerEvent<HTMLDivElement>) => {
     const canvas = canvasRef.current;
     if (!canvas || !image) return null;
@@ -177,16 +200,6 @@ function ImagePane({
       x: Math.min(image.width - 1, Math.max(0, Math.floor(((event.clientX - bounds.left) / bounds.width) * image.width))),
       y: Math.min(image.height - 1, Math.max(0, Math.floor(((event.clientY - bounds.top) / bounds.height) * image.height))),
     };
-  };
-
-  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
-    if (!image) return;
-    event.preventDefault();
-    const nextScale = Math.min(
-      maximumScale,
-      Math.max(minimumScale, view.scale * (event.deltaY > 0 ? 0.9 : 1.1)),
-    );
-    onViewChange({ ...view, scale: nextScale });
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -238,11 +251,11 @@ function ImagePane({
       className={`image-pane checkerboard ${image ? "is-interactive" : ""} ${
         interactionMode !== "pan" ? "is-painting" : ""
       }`}
+      ref={paneRef}
       onPointerCancel={handlePointerEnd}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerEnd}
-      onWheel={handleWheel}
     >
       {image ? (
         <canvas
@@ -298,7 +311,10 @@ function App() {
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("pan");
   const [brushSize, setBrushSize] = useState(12);
   const [protectedMask, setProtectedMask] = useState<Uint8Array | null>(null);
+  const [isClosePromptVisible, setIsClosePromptVisible] = useState(false);
+  const [isSavingBeforeClose, setIsSavingBeforeClose] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const closeApprovedRef = useRef(false);
 
   const processedImage = useMemo(
     () =>
@@ -313,6 +329,26 @@ function App() {
   );
   const backgroundColor = sourceImage ? colorToHex(estimateCornerColor(sourceImage)) : "#1C1523";
   const palette = useMemo(() => (processedImage ? getFrequentColors(processedImage) : []), [processedImage]);
+
+  useEffect(() => {
+    let isDisposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested((event) => {
+        if (closeApprovedRef.current || !sourceImage) return;
+        event.preventDefault();
+        setIsClosePromptVisible(true);
+      })
+      .then((listener) => {
+        if (isDisposed) listener();
+        else unlisten = listener;
+      })
+      .catch(() => undefined);
+    return () => {
+      isDisposed = true;
+      unlisten?.();
+    };
+  }, [sourceImage]);
 
   const importFile = async (file: File | undefined) => {
     if (!file) return;
@@ -389,7 +425,7 @@ function App() {
 
   const saveProject = async () => {
     const projectFile = createProjectFile();
-    if (!projectFile) return;
+    if (!projectFile) return false;
     try {
       const path = await save({
         defaultPath: projectFile.suggestedName,
@@ -397,13 +433,33 @@ function App() {
       });
       if (path === null) {
         setMessage("已取消保存工程。");
-        return;
+        return false;
       }
       await invoke("write_project_file", { path, contents: projectFile.contents });
       setMessage("工程已保存：包含原图、保护蒙版和全部编辑参数。");
+      return true;
     } catch {
       setMessage("无法打开桌面保存对话框，工程未保存。");
+      return false;
     }
+  };
+
+  const closeDesktopWindow = async () => {
+    closeApprovedRef.current = true;
+    setIsClosePromptVisible(false);
+    try {
+      await getCurrentWindow().close();
+    } catch {
+      closeApprovedRef.current = false;
+      setMessage("无法关闭桌面窗口。");
+    }
+  };
+
+  const saveAndClose = async () => {
+    setIsSavingBeforeClose(true);
+    const isSaved = await saveProject();
+    setIsSavingBeforeClose(false);
+    if (isSaved) await closeDesktopWindow();
   };
 
   const openProjectDialog = async () => {
@@ -692,6 +748,26 @@ function App() {
           </section>
         </aside>
       </section>
+      {isClosePromptVisible && (
+        <div aria-modal="true" className="modal-backdrop" role="dialog">
+          <section className="close-dialog" aria-labelledby="close-dialog-title">
+            <p className="eyebrow">未保存的工作状态</p>
+            <h2 id="close-dialog-title">关闭前要保存工程吗？</h2>
+            <p>工程会保存原图、保护画笔、背景参数、缩放与画布位置。</p>
+            <div className="close-dialog-actions">
+              <button disabled={isSavingBeforeClose} onClick={() => void closeDesktopWindow()} type="button">
+                不保存
+              </button>
+              <button disabled={isSavingBeforeClose} onClick={() => setIsClosePromptVisible(false)} type="button">
+                取消
+              </button>
+              <button className="primary" disabled={isSavingBeforeClose} onClick={() => void saveAndClose()} type="button">
+                {isSavingBeforeClose ? "正在保存…" : "保存工程"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

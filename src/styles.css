@@ -85,6 +85,13 @@ input[type="range"] { width: 100%; accent-color: #cc63ed; }
 .palette-item code { font-size: 11px; }
 .palette-item small { color: #908295; font-size: 10px; }
 .empty-palette { line-height: 1.5; }
+.modal-backdrop { position: fixed; z-index: 20; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(8, 6, 10, .72); }
+.close-dialog { width: min(390px, 100%); padding: 24px; border: 1px solid #684778; border-radius: 13px; background: #221a29; box-shadow: 0 24px 70px rgba(0, 0, 0, .46); }
+.close-dialog h2 { margin: 7px 0 10px; font-size: 19px; }
+.close-dialog > p:not(.eyebrow) { color: #b9acbf; font-size: 13px; line-height: 1.55; }
+.close-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.close-dialog-actions button { padding: 8px 11px; color: #ded3e5; background: #34293d; border-color: #55435f; font-size: 12px; }
+.close-dialog-actions .primary { color: #fff; background: #a43dcd; border-color: #a43dcd; }
 
 @media (max-width: 1050px) {
   .workspace { grid-template-columns: minmax(560px, 1fr) 290px; }
