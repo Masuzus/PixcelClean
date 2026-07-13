@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --port 1420",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

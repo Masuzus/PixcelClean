@@ -299,7 +299,6 @@ function App() {
   const [brushSize, setBrushSize] = useState(12);
   const [protectedMask, setProtectedMask] = useState<Uint8Array | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const projectFileInputRef = useRef<HTMLInputElement>(null);
 
   const processedImage = useMemo(
     () =>
@@ -388,25 +387,6 @@ function App() {
     }
   };
 
-  const handleProjectFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) void restoreProjectFromFile(file);
-    event.target.value = "";
-  };
-
-  const restoreProjectFromFile = async (file: File) => {
-    await restoreProject(await file.text(), file.name);
-  };
-
-  const downloadProject = (contents: string, suggestedName: string) => {
-    const blob = new Blob([contents], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = suggestedName;
-    link.click();
-    URL.revokeObjectURL(link.href);
-  };
-
   const saveProject = async () => {
     const projectFile = createProjectFile();
     if (!projectFile) return;
@@ -422,8 +402,7 @@ function App() {
       await invoke("write_project_file", { path, contents: projectFile.contents });
       setMessage("工程已保存：包含原图、保护蒙版和全部编辑参数。");
     } catch {
-      downloadProject(projectFile.contents, projectFile.suggestedName);
-      setMessage("当前为网页模式，工程已下载到浏览器默认位置。");
+      setMessage("无法打开桌面保存对话框，工程未保存。");
     }
   };
 
@@ -438,7 +417,7 @@ function App() {
       const contents = await invoke<string>("read_project_file", { path });
       await restoreProject(contents, path.split(/[/\\]/).pop() ?? "工程文件");
     } catch {
-      projectFileInputRef.current?.click();
+      setMessage("无法打开桌面工程文件对话框。");
     }
   };
 
@@ -502,13 +481,6 @@ function App() {
             导出透明 PNG
           </button>
           <input accept="image/png" hidden onChange={handleFileChange} ref={fileInputRef} type="file" />
-          <input
-            accept=".pixelclean.json,application/json"
-            hidden
-            onChange={handleProjectFileChange}
-            ref={projectFileInputRef}
-            type="file"
-          />
         </div>
       </header>
 
