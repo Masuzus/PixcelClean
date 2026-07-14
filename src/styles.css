@@ -8,7 +8,7 @@
 * { box-sizing: border-box; }
 
 body { margin: 0; min-width: 980px; min-height: 100vh; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .45; }
 
@@ -32,26 +32,28 @@ button { border: 1px solid transparent; border-radius: 8px; padding: 9px 14px; f
 .preview-card { min-height: 430px; border: 1px solid #3b3046; border-radius: 12px; padding: 14px; background: #1c1721; display: flex; flex-direction: column; }
 .preview-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; color: #f6edff; font-weight: 700; }
 .preview-heading small, .help-text, .range-hint, .empty-palette, .status-message { color: #aa9db4; font-size: 12px; }
-.image-pane { min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 7px; background-color: #151217; }
+.image-pane { position: relative; min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 7px; background-color: #151217; }
 .image-pane.is-interactive { cursor: grab; touch-action: none; }
 .image-pane.is-interactive:active { cursor: grabbing; }
 .image-pane.is-interactive.is-painting { cursor: crosshair; }
 .image-pane.is-interactive.is-painting:active { cursor: crosshair; }
 .checkerboard { background-image: linear-gradient(45deg, #28222e 25%, transparent 25%), linear-gradient(-45deg, #28222e 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #28222e 75%), linear-gradient(-45deg, transparent 75%, #28222e 75%); background-position: 0 0, 0 9px, 9px -9px, -9px 0; background-size: 18px 18px; }
-.image-pane canvas { display: block; max-width: 100%; max-height: 100%; image-rendering: pixelated; image-rendering: crisp-edges; transform-origin: center; }
+.image-pane canvas { position: absolute; top: 50%; left: 50%; display: block; max-width: none; max-height: none; image-rendering: crisp-edges; image-rendering: pixelated; transform-origin: center; }
 .image-pane p { color: #a99dad; font-size: 13px; }
-.status-message { margin: 16px 2px 0; }
+.status-message { display: flex; gap: 8px; align-items: baseline; margin: 16px 2px 0; }
+.status-message time { color: #c985e0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
 .canvas-footer { min-height: 46px; display: flex; justify-content: space-between; align-items: end; gap: 16px; }
 .view-controls { display: flex; align-items: center; gap: 4px; }
 .view-controls button { min-width: 31px; padding: 5px 9px; color: #e9deef; background: #27202e; border-color: #4a3d55; line-height: 1.1; }
 .view-controls button:hover:not(:disabled) { background: #382c41; }
 .view-controls output { min-width: 46px; color: #c985e0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; text-align: center; }
+.view-controls output.is-fractional { color: #e2b36e; }
 .view-controls .reset-view { margin-left: 5px; font-size: 11px; }
 .dropzone { position: absolute; z-index: 2; inset: 50% auto auto 50%; transform: translate(-50%, -50%); min-width: 240px; min-height: 110px; color: #f6eaff; background: rgba(38, 28, 47, .95); border: 1px dashed #d775f4; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px; }
 .dropzone:hover { background: #3b2846; }
 .dropzone small { color: #cdb9d9; }
 
-.inspector { padding: 24px 20px; background: rgba(20, 16, 25, .72); }
+.inspector { max-height: calc(100vh - 88px); overflow-y: auto; padding: 24px 20px; background: rgba(20, 16, 25, .72); }
 .panel-section { padding-bottom: 25px; margin-bottom: 22px; border-bottom: 1px solid #30283a; }
 .panel-section:last-child { border: 0; }
 .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 9px; }
@@ -59,9 +61,17 @@ button { border: 1px solid transparent; border-radius: 8px; padding: 9px 14px; f
 .badge.muted { color: #a89cab; background: #302936; }
 .help-text { line-height: 1.55; margin-bottom: 17px; }
 .color-sample { display: flex; gap: 10px; align-items: center; padding: 9px; border: 1px solid #3b3046; border-radius: 7px; background: #201a26; }
-.color-sample > span { width: 32px; height: 32px; border: 1px solid #75657e; border-radius: 5px; }
+.color-sample > input { width: 32px; height: 32px; padding: 2px; border: 1px solid #75657e; border-radius: 5px; background: #17131b; }
 .color-sample small { display: block; color: #a99dad; font-size: 11px; margin-bottom: 2px; }
 .color-sample strong { color: #f3e9f9; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.control-label { margin: 17px 0 7px; color: #e7ddeb; font-size: 12px; }
+.edge-mode-control { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.edge-mode-control button { min-height: 58px; padding: 8px; color: #cdbfd4; border-color: #493b54; background: #25202b; }
+.edge-mode-control button strong, .edge-mode-control button small { display: block; }
+.edge-mode-control button strong { font-size: 11px; }
+.edge-mode-control button small { margin-top: 4px; color: #988b9f; font-size: 9px; line-height: 1.35; }
+.edge-mode-control button:hover:not(:disabled), .edge-mode-control button.is-active { color: #f6eafa; border-color: #cf70ed; background: #613277; }
+.edge-mode-control button.is-active small { color: #e7cfee; }
 .range-label { display: flex; justify-content: space-between; margin: 20px 0 7px; color: #e7ddeb; font-size: 13px; }
 .range-label output { color: #dc84f8; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 input[type="range"] { width: 100%; accent-color: #cc63ed; }
@@ -73,15 +83,39 @@ input[type="range"] { width: 100%; accent-color: #cc63ed; }
 .toggle-row small, .safety-note { color: #aa9db4; font-size: 11px; line-height: 1.45; }
 .toggle-row small { margin-top: 3px; }
 .safety-note { margin-top: 9px; }
+.advanced-settings { margin-top: 15px; padding: 9px 10px; border: 1px solid #3b3046; border-radius: 7px; background: #1c1721; }
+.advanced-settings summary { color: #b9acbf; cursor: pointer; font-size: 11px; }
+.advanced-settings .range-label { margin-top: 14px; }
 .tool-choice-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
 .tool-choice-row button { padding: 8px 6px; color: #cdbfd4; background: #25202b; border-color: #493b54; font-size: 11px; }
 .tool-choice-row button:not(:disabled):hover, .tool-choice-row button.is-active { color: #f6eafa; background: #613277; border-color: #cf70ed; }
 .selection-tip, .empty-protection { margin-top: 10px; color: #aa9db4; font-size: 11px; line-height: 1.5; }
 .protected-status { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-top: 12px; padding: 8px 9px; border: 1px solid #5d3e6b; border-radius: 6px; color: #e9dced; background: #291f30; font-size: 11px; }
 .protected-status button { padding: 3px 7px; color: #efc9fb; background: transparent; border-color: #81548f; font-size: 10px; }
-.palette-list { display: grid; gap: 7px; }
-.palette-item { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 9px; color: #ded2e5; font-size: 12px; }
-.palette-item > span { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #725e7c; }
+.preview-background-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.preview-background-options button { padding: 8px 3px; color: #cdbfd4; border-color: #493b54; background: #25202b; font-size: 10px; }
+.preview-background-options button:hover, .preview-background-options button.is-active { color: #f6eafa; border-color: #cf70ed; background: #613277; }
+.preview-custom-color { display: grid; grid-template-columns: 1fr 36px auto; align-items: center; gap: 8px; margin-top: 11px; padding: 8px 9px; color: #b9acbf; border: 1px solid #3b3046; border-radius: 7px; background: #201a26; font-size: 11px; }
+.preview-custom-color input { width: 36px; height: 27px; padding: 2px; border: 1px solid #675671; border-radius: 5px; background: #17131b; }
+.preview-custom-color code { color: #eadff0; font-size: 10px; }
+.preview-export-note { margin-top: 9px; color: #7ecb9c; font-size: 10px; line-height: 1.45; }
+.palette-reduction-note { margin-top: 9px; color: #8fc9a6; font-size: 10px; line-height: 1.5; }
+.processing-card { display: grid; gap: 8px; margin-top: 14px; padding: 11px; border: 1px solid #4b4053; border-radius: 8px; background: #211b26; }
+.processing-card strong { color: #eee4f2; font-size: 11px; line-height: 1.4; }
+.processing-card small { color: #aa9db4; font-size: 10px; line-height: 1.45; }
+.processing-card button { width: 100%; padding: 8px; font-size: 11px; }
+.auto-preview-toggle { display: flex; align-items: center; gap: 7px; color: #d7c9dc; font-size: 10px; cursor: pointer; }
+.auto-preview-toggle input { margin: 0; accent-color: #cb63ed; }
+.processing-card.is-dirty { border-color: #70553b; background: #2b241b; }
+.processing-card.is-processing { border-color: #4d587d; background: #1c2130; }
+.processing-card.is-ready { border-color: #38654d; background: #1b2a22; }
+.palette-list { display: grid; gap: 7px; max-height: 360px; overflow-y: auto; padding-right: 4px; }
+.palette-sort-control { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: -7px 0 12px; }
+.palette-sort-control button { padding: 7px 8px; color: #bfb1c7; border-color: #493b54; background: #25202b; font-size: 10px; }
+.palette-sort-control button:hover, .palette-sort-control button.is-active { color: #f6eafa; border-color: #cf70ed; background: #613277; }
+.palette-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 9px; color: #ded2e5; font-size: 12px; }
+.palette-swatch { position: relative; width: 18px; height: 18px; overflow: hidden; border-radius: 4px; border: 1px solid #725e7c; background-color: #f2edf4; background-image: linear-gradient(45deg, #8d8492 25%, transparent 25%), linear-gradient(-45deg, #8d8492 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #8d8492 75%), linear-gradient(-45deg, transparent 75%, #8d8492 75%); background-position: 0 0, 0 4px, 4px -4px, -4px 0; background-size: 8px 8px; }
+.palette-swatch i { position: absolute; inset: 0; }
 .palette-item code { font-size: 11px; }
 .palette-item small { color: #908295; font-size: 10px; }
 .empty-palette { line-height: 1.5; }
