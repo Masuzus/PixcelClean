@@ -5,7 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
+    "learn:oklab": "vite --port 1421 --open /oklab.html",
     "build": "tsc --noEmit && vite build",
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "test:background-color": "node tests/scripts/inspectBackgroundColors.mjs",
+    "test:background-color:regression": "node --test \"tests/algorithms/backgroundColorEstimation.*.test.mjs\"",
+    "test:adaptive-thresholds": "node tests/scripts/inspectAdaptiveThresholds.mjs",
+    "test:adaptive-thresholds:unit": "node --test \"tests/algorithms/adaptiveBackgroundThresholds.*.test.mjs\"",
+    "test:background-mask": "node tests/scripts/inspectBackgroundMask.mjs",
+    "test:oklab-distribution": "node tests/scripts/inspectOklabDistanceDistribution.mjs",
+    "test:watch": "node --test --watch \"tests/**/*.test.mjs\"",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
@@ -14,13 +23,16 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.185.1",
     "@vitejs/plugin-react": "^4.3.1",
+    "pngjs": "^7.0.0",
     "typescript": "^5.5.4",
     "vite": "^5.4.2"
   }

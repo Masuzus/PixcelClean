@@ -14,7 +14,6 @@ type ProcessingWorkerRequest = {
   height: number;
   imageData: ArrayBuffer;
   protectedMask: ArrayBuffer | null;
-  tolerance: number;
   includeEnclosedAreas: boolean;
   backgroundColor: RgbColor;
   edgeMode: EdgeMode;
@@ -41,7 +40,6 @@ self.onmessage = (event: MessageEvent<ProcessingWorkerRequest>) => {
       request.height,
     );
     const result = processImage(source, {
-      tolerance: request.tolerance,
       includeEnclosedAreas: request.includeEnclosedAreas,
       protectedMask: request.protectedMask ? new Uint8Array(request.protectedMask) : null,
       backgroundColor: request.backgroundColor,

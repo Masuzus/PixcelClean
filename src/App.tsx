@@ -45,7 +45,6 @@ type ImageView = {
 };
 
 type EditorHistorySnapshot = {
-  tolerance: number;
   includeEnclosedAreas: boolean;
   brushSize: number;
   protectedMask: Uint8Array | null;
@@ -83,69 +82,33 @@ function snapToDevicePixel(value: number): number {
   return Math.round(value * pixelRatio) / pixelRatio;
 }
 
-type PixelCleanProjectV1 = {
+type PixelCleanProject = {
   kind: "pixel-clean-project";
-  version: 1;
+  version: 3;
   source: {
     fileName: string;
     pngDataUrl: string;
   };
   editor: {
-    tolerance: number;
     includeEnclosedAreas: boolean;
     imageView: ImageView;
     brushSize: number;
     interactionMode: InteractionMode;
     protectedMask: string;
-  };
-};
-
-type PixelCleanProjectV2 = {
-  kind: "pixel-clean-project";
-  version: 2;
-  source: PixelCleanProjectV1["source"];
-  editor: PixelCleanProjectV1["editor"] & {
-    activeMask: "protected" | "glow";
-    autoPreviewEnabled?: boolean;
-    previewBackground?: {
-      mode: PreviewBackgroundMode;
-      customColor: string;
-    };
-    glowExtraction: {
-      enabled: boolean;
-      backgroundColor: string;
-      foregroundColor: string;
-      colorSpace: "linear" | "srgb";
-      strength: number;
-      minimumAlpha: number;
-      residualTolerance: number;
-      glowMask: string;
-      brushSize: number;
-    };
-  };
-};
-
-type PixelCleanProjectV3 = {
-  kind: "pixel-clean-project";
-  version: 3;
-  source: PixelCleanProjectV1["source"];
-  editor: PixelCleanProjectV1["editor"] & {
-    autoPreviewEnabled?: boolean;
-    previewBackground?: {
+    autoPreviewEnabled: boolean;
+    previewBackground: {
       mode: PreviewBackgroundMode;
       customColor: string;
     };
     backgroundColor: string;
-    edgeMode?: EdgeMode;
-    paletteSortMode?: PaletteSortMode;
+    edgeMode: EdgeMode;
+    paletteSortMode: PaletteSortMode;
     paletteReduction: {
       enabled: boolean;
       maximumColors: number;
     };
   };
 };
-
-type PixelCleanProject = PixelCleanProjectV1 | PixelCleanProjectV2 | PixelCleanProjectV3;
 
 type ProcessingWorkerResponse = {
   id: number;
@@ -173,14 +136,6 @@ function isInteractionMode(value: unknown): value is InteractionMode {
   return value === "pan" || value === "paint" || value === "erase";
 }
 
-function isLegacyActiveMask(value: unknown): value is "protected" | "glow" {
-  return value === "protected" || value === "glow";
-}
-
-function isLegacyColorSpace(value: unknown): value is "linear" | "srgb" {
-  return value === "linear" || value === "srgb";
-}
-
 function isPreviewBackgroundMode(value: unknown): value is PreviewBackgroundMode {
   return value === "checkerboard" || value === "black" || value === "white" || value === "custom";
 }
@@ -202,62 +157,34 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function isPixelCleanProject(value: unknown): value is PixelCleanProject {
-  if (!isRecord(value) || value.kind !== "pixel-clean-project" || ![1, 2, 3].includes(value.version as number)) return false;
+  if (!isRecord(value) || value.kind !== "pixel-clean-project" || value.version !== 3) return false;
   if (!isRecord(value.source) || typeof value.source.fileName !== "string" || typeof value.source.pngDataUrl !== "string") {
     return false;
   }
   const editor = value.editor;
   if (!isRecord(editor)) return false;
   const imageView = editor.imageView;
-  if (!isRecord(imageView)) return false;
-  const commonFieldsAreValid = (
-    isFiniteNumber(editor.tolerance) &&
-    typeof editor.includeEnclosedAreas === "boolean" &&
-    isFiniteNumber(imageView.scale) &&
-    isFiniteNumber(imageView.offsetX) &&
-    isFiniteNumber(imageView.offsetY) &&
-    isFiniteNumber(editor.brushSize) &&
-    isInteractionMode(editor.interactionMode) &&
-    typeof editor.protectedMask === "string"
-  );
-  if (!commonFieldsAreValid || value.version === 1) return commonFieldsAreValid;
-  const glowExtraction = editor.glowExtraction;
   const previewBackground = editor.previewBackground;
-  const optionalFieldsAreValid = (
-    (editor.autoPreviewEnabled === undefined || typeof editor.autoPreviewEnabled === "boolean")
-    && (
-      previewBackground === undefined
-      || (
-        isRecord(previewBackground)
-        && isPreviewBackgroundMode(previewBackground.mode)
-        && isHexColor(previewBackground.customColor)
-      )
-    )
-  );
-  if (!optionalFieldsAreValid) return false;
-  if (value.version === 3) {
-    const paletteReduction = editor.paletteReduction;
-    return (
-      isHexColor(editor.backgroundColor)
-      && (editor.edgeMode === undefined || isEdgeMode(editor.edgeMode))
-      && (editor.paletteSortMode === undefined || isPaletteSortMode(editor.paletteSortMode))
-      && isRecord(paletteReduction)
-      && typeof paletteReduction.enabled === "boolean"
-      && isFiniteNumber(paletteReduction.maximumColors)
-    );
-  }
+  const paletteReduction = editor.paletteReduction;
   return (
-    isLegacyActiveMask(editor.activeMask)
-    && isRecord(glowExtraction)
-    && typeof glowExtraction.enabled === "boolean"
-    && isHexColor(glowExtraction.backgroundColor)
-    && isHexColor(glowExtraction.foregroundColor)
-    && isLegacyColorSpace(glowExtraction.colorSpace)
-    && isFiniteNumber(glowExtraction.strength)
-    && isFiniteNumber(glowExtraction.minimumAlpha)
-    && isFiniteNumber(glowExtraction.residualTolerance)
-    && typeof glowExtraction.glowMask === "string"
-    && isFiniteNumber(glowExtraction.brushSize)
+    isRecord(imageView)
+    && isRecord(previewBackground)
+    && isRecord(paletteReduction)
+    && typeof editor.includeEnclosedAreas === "boolean"
+    && isFiniteNumber(imageView.scale)
+    && isFiniteNumber(imageView.offsetX)
+    && isFiniteNumber(imageView.offsetY)
+    && isFiniteNumber(editor.brushSize)
+    && isInteractionMode(editor.interactionMode)
+    && typeof editor.protectedMask === "string"
+    && typeof editor.autoPreviewEnabled === "boolean"
+    && isPreviewBackgroundMode(previewBackground.mode)
+    && isHexColor(previewBackground.customColor)
+    && isHexColor(editor.backgroundColor)
+    && isEdgeMode(editor.edgeMode)
+    && isPaletteSortMode(editor.paletteSortMode)
+    && typeof paletteReduction.enabled === "boolean"
+    && isFiniteNumber(paletteReduction.maximumColors)
   );
 }
 
@@ -489,7 +416,6 @@ async function loadImageDataUrl(dataUrl: string): Promise<ImageData> {
 
 function App() {
   const [sourceImage, setSourceImage] = useState<ImageData | null>(null);
-  const [tolerance, setTolerance] = useState(20);
   const [fileName, setFileName] = useState("");
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<StatusMessage>(() => ({
@@ -565,7 +491,6 @@ function App() {
         : `${previewCustomColor} 预览`;
 
   const captureEditorSnapshot = (): EditorHistorySnapshot => ({
-    tolerance,
     includeEnclosedAreas,
     brushSize,
     protectedMask,
@@ -578,7 +503,6 @@ function App() {
   });
 
   const applyEditorSnapshot = (snapshot: EditorHistorySnapshot) => {
-    setTolerance(snapshot.tolerance);
     setIncludeEnclosedAreas(snapshot.includeEnclosedAreas);
     setBrushSize(snapshot.brushSize);
     setProtectedMask(snapshot.protectedMask);
@@ -669,7 +593,6 @@ function App() {
     }, historyTransactionDelay);
   }, [
     sourceImage,
-    tolerance,
     includeEnclosedAreas,
     brushSize,
     protectedMask,
@@ -690,7 +613,6 @@ function App() {
     setProcessingStats(null);
   }, [
     sourceImage,
-    tolerance,
     includeEnclosedAreas,
     protectedMask,
     backgroundColor,
@@ -723,7 +645,6 @@ function App() {
     sourceImage,
     autoPreviewEnabled,
     processingStatus,
-    tolerance,
     includeEnclosedAreas,
     protectedMask,
     backgroundColor,
@@ -791,7 +712,7 @@ function App() {
 
   const createProjectFile = () => {
     if (!sourceImage) return null;
-    const project: PixelCleanProjectV3 = {
+    const project: PixelCleanProject = {
       kind: "pixel-clean-project",
       version: 3,
       source: {
@@ -799,7 +720,6 @@ function App() {
         pngDataUrl: imageDataToDataUrl(sourceImage),
       },
       editor: {
-        tolerance,
         includeEnclosedAreas,
         imageView,
         brushSize,
@@ -833,33 +753,9 @@ function App() {
       const image = await loadImageDataUrl(project.source.pngDataUrl);
       const mask = base64ToMask(project.editor.protectedMask, image.width * image.height);
       if (!mask) throw new Error("工程保护蒙版无效。");
-      const restoredBackgroundColor = project.version === 3
-        ? project.editor.backgroundColor.toUpperCase()
-        : project.version === 2
-          ? project.editor.glowExtraction.backgroundColor.toUpperCase()
-          : colorToHex(estimateCornerColor(image));
-      const restoredPreviewBackground = project.version !== 1
-        ? project.editor.previewBackground
-        : undefined;
-      const restoredAutoPreviewEnabled = project.version !== 1
-        ? project.editor.autoPreviewEnabled ?? true
-        : true;
-      const restoredPaletteReductionEnabled = project.version === 3
-        ? project.editor.paletteReduction.enabled
-        : true;
-      const restoredMaximumPaletteColors = project.version === 3
-        ? clamp(project.editor.paletteReduction.maximumColors, 8, 20)
-        : 16;
-      const restoredPaletteSortMode = project.version === 3
-        ? project.editor.paletteSortMode ?? "frequency"
-        : "frequency";
-      const restoredEdgeMode = project.version === 3
-        ? project.editor.edgeMode ?? "natural"
-        : "natural";
       setSourceImage(image);
       setFileName(project.source.fileName);
       setProjectPath(path);
-      setTolerance(clamp(project.editor.tolerance, 0, 120));
       setIncludeEnclosedAreas(project.editor.includeEnclosedAreas);
       setImageView({
         scale: clamp(project.editor.imageView.scale, minimumScale, maximumScale),
@@ -871,16 +767,16 @@ function App() {
       setProtectedMask(mask);
       setProcessedImage(null);
       setProcessingStats(null);
-      setBackgroundColor(restoredBackgroundColor);
-      setEdgeMode(restoredEdgeMode);
-      setPreviewBackgroundMode(restoredPreviewBackground?.mode ?? "checkerboard");
-      setPreviewCustomColor(restoredPreviewBackground?.customColor.toUpperCase() ?? "#6B7280");
-      setAutoPreviewEnabled(restoredAutoPreviewEnabled);
-      setPaletteReductionEnabled(restoredPaletteReductionEnabled);
-      setMaximumPaletteColors(restoredMaximumPaletteColors);
-      setPaletteSortMode(restoredPaletteSortMode);
+      setBackgroundColor(project.editor.backgroundColor.toUpperCase());
+      setEdgeMode(project.editor.edgeMode);
+      setPreviewBackgroundMode(project.editor.previewBackground.mode);
+      setPreviewCustomColor(project.editor.previewBackground.customColor.toUpperCase());
+      setAutoPreviewEnabled(project.editor.autoPreviewEnabled);
+      setPaletteReductionEnabled(project.editor.paletteReduction.enabled);
+      setMaximumPaletteColors(clamp(project.editor.paletteReduction.maximumColors, 8, 20));
+      setPaletteSortMode(project.editor.paletteSortMode);
       setMessage(
-        `已打开工程 ${projectName}${restoredAutoPreviewEnabled ? "，即将自动更新预览。" : "，请强制渲染预览。"}`,
+        `已打开工程 ${projectName}${project.editor.autoPreviewEnabled ? "，即将自动更新预览。" : "，请强制渲染预览。"}`,
       );
     } catch {
       setMessage("无法打开工程文件，请确认它未损坏且来自 Pixel Clean。");
@@ -1043,7 +939,6 @@ function App() {
         height,
         imageData: imageBuffer,
         protectedMask: protectedBuffer ?? null,
-        tolerance,
         includeEnclosedAreas,
         backgroundColor: hexToColor(backgroundColor),
         edgeMode,
@@ -1264,25 +1159,6 @@ function App() {
                 <small>清除圆环、边框等封闭区域内匹配的背景色。</small>
               </span>
             </label>
-            <details className="advanced-settings">
-              <summary>高级设置</summary>
-              <label className="range-label" htmlFor="tolerance">
-                <span>背景识别范围</span>
-                <output>{tolerance}</output>
-              </label>
-              <input
-                id="tolerance"
-                max="120"
-                min="0"
-                onChange={(event) => setTolerance(Number(event.target.value))}
-                type="range"
-                value={tolerance}
-              />
-              <div className="range-hint">
-                <span>严格</span>
-                <span>宽松</span>
-              </div>
-            </details>
             <p className="safety-note">若主体与背景颜色接近，请使用保护画笔后重新渲染。</p>
           </section>
 

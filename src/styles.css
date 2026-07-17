@@ -31,7 +31,7 @@ button { border: 1px solid transparent; border-radius: 8px; padding: 9px 14px; f
 .comparison-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .preview-card { min-height: 430px; border: 1px solid #3b3046; border-radius: 12px; padding: 14px; background: #1c1721; display: flex; flex-direction: column; }
 .preview-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; color: #f6edff; font-weight: 700; }
-.preview-heading small, .help-text, .range-hint, .empty-palette, .status-message { color: #aa9db4; font-size: 12px; }
+.preview-heading small, .help-text, .empty-palette, .status-message { color: #aa9db4; font-size: 12px; }
 .image-pane { position: relative; min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 7px; background-color: #151217; }
 .image-pane.is-interactive { cursor: grab; touch-action: none; }
 .image-pane.is-interactive:active { cursor: grabbing; }
@@ -75,7 +75,6 @@ button { border: 1px solid transparent; border-radius: 8px; padding: 9px 14px; f
 .range-label { display: flex; justify-content: space-between; margin: 20px 0 7px; color: #e7ddeb; font-size: 13px; }
 .range-label output { color: #dc84f8; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 input[type="range"] { width: 100%; accent-color: #cc63ed; }
-.range-hint { display: flex; justify-content: space-between; margin-top: 2px; font-size: 10px; }
 .toggle-row { display: flex; gap: 9px; align-items: flex-start; margin-top: 19px; color: #e9ddec; cursor: pointer; }
 .toggle-row input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: #cb63ed; }
 .toggle-row strong, .toggle-row small { display: block; }
@@ -83,9 +82,6 @@ input[type="range"] { width: 100%; accent-color: #cc63ed; }
 .toggle-row small, .safety-note { color: #aa9db4; font-size: 11px; line-height: 1.45; }
 .toggle-row small { margin-top: 3px; }
 .safety-note { margin-top: 9px; }
-.advanced-settings { margin-top: 15px; padding: 9px 10px; border: 1px solid #3b3046; border-radius: 7px; background: #1c1721; }
-.advanced-settings summary { color: #b9acbf; cursor: pointer; font-size: 11px; }
-.advanced-settings .range-label { margin-top: 14px; }
 .tool-choice-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
 .tool-choice-row button { padding: 8px 6px; color: #cdbfd4; background: #25202b; border-color: #493b54; font-size: 11px; }
 .tool-choice-row button:not(:disabled):hover, .tool-choice-row button.is-active { color: #f6eafa; background: #613277; border-color: #cf70ed; }
