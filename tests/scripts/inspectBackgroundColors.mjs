@@ -3,6 +3,10 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PNG } from "pngjs";
 import { estimateCornerColor } from "../../src/algorithms/backgroundColorEstimation.ts";
+import {
+  defaultLocalColorSimilarityThreshold,
+  mergeLocalColorIslands,
+} from "../../src/algorithms/localColorIslands.ts";
 
 const projectRoot = path.resolve(import.meta.dirname, "../..");
 const inputDirectory = path.join(projectRoot, "tests/input/images");
@@ -11,17 +15,22 @@ const reportPath = path.join(outputDirectory, "background-color-report.html");
 
 function parseArguments(argumentsList) {
   let shouldOpen = true;
+  let localColorThreshold = defaultLocalColorSimilarityThreshold;
 
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     if (argument === "--no-open") {
       shouldOpen = false;
+    } else if (argument === "--local-threshold") {
+      localColorThreshold = Number(argumentsList[index + 1]);
+      if (!Number.isFinite(localColorThreshold) || localColorThreshold < 0) throw new Error("--local-threshold 需要大于或等于 0 的数值。");
+      index += 1;
     } else {
       throw new Error(`未知参数：${argument}`);
     }
   }
 
-  return { inputDirectory, shouldOpen };
+  return { inputDirectory, localColorThreshold, shouldOpen };
 }
 
 async function collectPngFiles(directory) {
@@ -196,7 +205,7 @@ async function openReport(reportFilePath) {
 }
 
 async function main() {
-  const { inputDirectory, shouldOpen } = parseArguments(process.argv.slice(2));
+  const { inputDirectory, localColorThreshold, shouldOpen } = parseArguments(process.argv.slice(2));
   await mkdir(inputDirectory, { recursive: true });
   const pngFiles = await collectPngFiles(inputDirectory);
 
@@ -210,6 +219,7 @@ async function main() {
   const results = [];
   const errors = [];
   console.log(`输入目录：${inputDirectory}`);
+  console.log(`近似颜色阈值：${localColorThreshold}`);
   console.log("");
 
   for (const filePath of pngFiles) {
@@ -217,11 +227,12 @@ async function main() {
     try {
       const fileData = await readFile(filePath);
       const png = PNG.sync.read(fileData);
-      const estimatedColor = estimateCornerColor({
+      const merged = mergeLocalColorIslands({
         width: png.width,
         height: png.height,
         data: new Uint8ClampedArray(png.data),
-      });
+      }, localColorThreshold);
+      const estimatedColor = estimateCornerColor(merged.image);
       const hex = colorToHex(estimatedColor);
       results.push({
         relativePath,
@@ -233,6 +244,7 @@ async function main() {
       console.log(`${relativePath}`);
       console.log(`  Hex: ${hex}`);
       console.log(`  RGB: rgb(${estimatedColor.join(", ")})`);
+      console.log(`  岛屿: ${merged.stats.islandCount}，替换像素: ${merged.stats.replacedPixelCount}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push({ relativePath, message });

@@ -1,8 +1,8 @@
 import {
-  colorDistanceSquared,
   rgbToOklab,
   type OklabColor,
 } from "./colorSpace.ts";
+import { directionalBackgroundDistance } from "./directionalBackgroundDistance.ts";
 import type { RgbaImageView } from "./types";
 
 export type OklabDistanceDistribution = {
@@ -47,7 +47,7 @@ export function collectOklabDistanceDistribution(
     let distance = colorDistanceCache.get(packedRgb);
     if (distance === undefined) {
       const pixelLab = rgbToOklab(image.data[offset], image.data[offset + 1], image.data[offset + 2]);
-      distance = Math.sqrt(colorDistanceSquared(pixelLab, backgroundLab));
+      distance = directionalBackgroundDistance(pixelLab, backgroundLab);
       if (colorDistanceCache.size < maximumCacheEntries) colorDistanceCache.set(packedRgb, distance);
     }
 

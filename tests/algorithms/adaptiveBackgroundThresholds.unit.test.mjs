@@ -71,15 +71,20 @@ describe("getAdaptiveBackgroundThresholds", () => {
 
     assert.deepEqual(uniformThresholds, { strict: 0.006, loose: 0.014 });
     assert.equal(variableThresholds.strict, 0.006);
-    assert.equal(variableThresholds.loose, 0.033);
+    assert.equal(variableThresholds.loose, 0.046);
   });
 
   it("keeps the meaningful sparse background tail in a real PNG", async () => {
+    const image = await readPngFixture("../input/images/rika_42185cce (1).png");
     const thresholds = getAdaptiveBackgroundThresholds(
-      await readPngFixture("../input/images/rika_5782140c.png"),
-      rgbToOklab(65, 38, 27),
+      image,
+      rgbToOklab(23, 17, 29),
     );
 
-    assert.deepEqual(thresholds, { strict: 0.006, loose: 0.021 });
+    assert.deepEqual(thresholds, { strict: 0.006, loose: 0.014 });
+    assert.deepEqual(
+      getAdaptiveBackgroundThresholds(image, rgbToOklab(28, 21, 35)),
+      { strict: 0.015, loose: 0.022 },
+    );
   });
 });

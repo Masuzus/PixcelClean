@@ -1,386 +1,87 @@
 import {
-  ChangeEvent,
-  DragEvent,
-  PointerEvent,
+  type ChangeEvent,
+  type DragEvent,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import ImageViewport, {
+  type ImageView,
+  type InteractionMode,
+} from "./components/ImageViewport";
+import ThresholdControl from "./components/ThresholdControl";
+import { colorToHex, rgbToOklab } from "./algorithms/colorSpace";
 import {
-  colorToHex,
-  estimateCornerColor,
-  getImageColors,
-  paintProtectionMask,
-  type EdgeMode,
-  type ImageProcessingStats,
-  type PixelPosition,
-  type RgbColor,
-} from "./imageProcessing";
+  backgroundDistanceMetricVersion,
+  getDirectionalBackgroundDistance,
+} from "./algorithms/directionalBackgroundDistance";
+import {
+  defaultEdgeGlowWidth,
+  type EdgeGlowStats,
+} from "./algorithms/edgeGlowReconstruction";
+import {
+  defaultLocalColorSimilarityThreshold,
+  localColorIslandsAlgorithmVersion,
+  type LocalColorIslandStats,
+} from "./algorithms/localColorIslands";
+import type { RgbColor } from "./algorithms/types";
+import {
+  createImageMemoryKey,
+  loadProjectMemory,
+  normalizeProjectMemoryPreviewBackgroundColor,
+  normalizeProjectMemoryPreviewBackgroundMode,
+  saveProjectMemory,
+  type ProjectMemory,
+  type ProjectMemoryPreviewBackgroundMode,
+} from "./editor/projectMemory";
+import { paintProtectionMask, type PixelPosition } from "./editor/protectionMask";
+import type { BackgroundMaskStats } from "./pipeline/backgroundAnalysis";
+import type {
+  BackgroundWorkerRequest,
+  BackgroundWorkerResponse,
+} from "./pipeline/backgroundAnalysisProtocol";
+import type { BackgroundThresholds } from "./algorithms/adaptiveBackgroundThresholds";
 
-type InteractionMode = "pan" | "paint" | "erase";
-type ProcessingStatus = "dirty" | "processing" | "ready";
-type PreviewBackgroundMode = "checkerboard" | "black" | "white" | "custom";
-type PaletteSortMode = "frequency" | "dark-to-light";
+type AnalysisStatus = "idle" | "analyzing" | "classifying" | "ready" | "error";
+type PreviewMode = "remove-background" | "remove-foreground" | "mask";
 
-type ImagePaneProps = {
-  image: ImageData | null;
-  emptyLabel: string;
-  view: ImageView;
-  onViewChange: (view: ImageView) => void;
-  interactionMode: InteractionMode;
-  overlayMask: Uint8Array | null;
-  overlayColor: string;
-  onPaintMask: (from: PixelPosition, to: PixelPosition, shouldPaint: boolean) => void;
-  paneBackgroundColor?: string | null;
+type AnalysisModel = {
+  analysisId: number;
+  mergedImage: ImageData;
+  localColorStats: LocalColorIslandStats;
+  edgeImage: ImageData;
+  glowMask: Uint8Array;
+  edgeGlowStats: EdgeGlowStats;
+  estimatedBackgroundColor: RgbColor;
+  backgroundColor: RgbColor;
+  thresholds: BackgroundThresholds;
+  backgroundMask: Uint8Array;
+  distances: Float32Array;
+  stats: BackgroundMaskStats;
 };
 
-type ImageView = {
-  scale: number;
-  offsetX: number;
-  offsetY: number;
-};
+const initialView: ImageView = { zoom: 1, offsetX: 0, offsetY: 0 };
+const initialBrushSize = 12;
 
-type EditorHistorySnapshot = {
-  includeEnclosedAreas: boolean;
-  brushSize: number;
-  protectedMask: Uint8Array | null;
-  backgroundColor: string;
-  edgeMode: EdgeMode;
-  paletteReductionEnabled: boolean;
-  maximumPaletteColors: number;
-  previewBackgroundMode: PreviewBackgroundMode;
-  previewCustomColor: string;
-};
-
-const minimumScale = 0.125;
-const maximumScale = 16;
-const wheelZoomSensitivity = 0.0025;
-const automaticPreviewDelay = 500;
-const historyTransactionDelay = 350;
-const maximumHistoryEntries = 20;
-
-function getIntegerButtonScale(currentScale: number, direction: -1 | 1): number {
-  if (direction > 0) {
-    if (currentScale < 1) return 1;
-    return Math.min(maximumScale, Math.floor(currentScale) + 1);
-  }
-  if (currentScale <= 1) return 1;
-  return Math.max(1, Math.ceil(currentScale) - 1);
-}
-
-function getLinearWheelScale(currentScale: number, deltaY: number): number {
-  const nextScale = currentScale - deltaY * wheelZoomSensitivity;
-  return Math.round(Math.min(maximumScale, Math.max(minimumScale, nextScale)) * 1000) / 1000;
-}
-
-function snapToDevicePixel(value: number): number {
-  const pixelRatio = window.devicePixelRatio || 1;
-  return Math.round(value * pixelRatio) / pixelRatio;
-}
-
-type PixelCleanProject = {
-  kind: "pixel-clean-project";
-  version: 3;
-  source: {
-    fileName: string;
-    pngDataUrl: string;
-  };
-  editor: {
-    includeEnclosedAreas: boolean;
-    imageView: ImageView;
-    brushSize: number;
-    interactionMode: InteractionMode;
-    protectedMask: string;
-    autoPreviewEnabled: boolean;
-    previewBackground: {
-      mode: PreviewBackgroundMode;
-      customColor: string;
-    };
-    backgroundColor: string;
-    edgeMode: EdgeMode;
-    paletteSortMode: PaletteSortMode;
-    paletteReduction: {
-      enabled: boolean;
-      maximumColors: number;
-    };
-  };
-};
-
-type ProcessingWorkerResponse = {
-  id: number;
-  imageData?: ArrayBuffer;
-  stats?: ImageProcessingStats;
-  error?: string;
-};
-
-type StatusMessage = {
-  timestamp: string;
-  text: string;
-};
-
-function formatLogTimestamp(date = new Date()): string {
-  return [date.getHours(), date.getMinutes(), date.getSeconds()]
-    .map((value) => value.toString().padStart(2, "0"))
-    .join("");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isInteractionMode(value: unknown): value is InteractionMode {
-  return value === "pan" || value === "paint" || value === "erase";
-}
-
-function isPreviewBackgroundMode(value: unknown): value is PreviewBackgroundMode {
-  return value === "checkerboard" || value === "black" || value === "white" || value === "custom";
-}
-
-function isPaletteSortMode(value: unknown): value is PaletteSortMode {
-  return value === "frequency" || value === "dark-to-light";
-}
-
-function isEdgeMode(value: unknown): value is EdgeMode {
-  return value === "natural" || value === "hard";
-}
-
-function isHexColor(value: unknown): value is string {
-  return typeof value === "string" && /^#[0-9A-F]{6}$/i.test(value);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isPixelCleanProject(value: unknown): value is PixelCleanProject {
-  if (!isRecord(value) || value.kind !== "pixel-clean-project" || value.version !== 3) return false;
-  if (!isRecord(value.source) || typeof value.source.fileName !== "string" || typeof value.source.pngDataUrl !== "string") {
-    return false;
-  }
-  const editor = value.editor;
-  if (!isRecord(editor)) return false;
-  const imageView = editor.imageView;
-  const previewBackground = editor.previewBackground;
-  const paletteReduction = editor.paletteReduction;
-  return (
-    isRecord(imageView)
-    && isRecord(previewBackground)
-    && isRecord(paletteReduction)
-    && typeof editor.includeEnclosedAreas === "boolean"
-    && isFiniteNumber(imageView.scale)
-    && isFiniteNumber(imageView.offsetX)
-    && isFiniteNumber(imageView.offsetY)
-    && isFiniteNumber(editor.brushSize)
-    && isInteractionMode(editor.interactionMode)
-    && typeof editor.protectedMask === "string"
-    && typeof editor.autoPreviewEnabled === "boolean"
-    && isPreviewBackgroundMode(previewBackground.mode)
-    && isHexColor(previewBackground.customColor)
-    && isHexColor(editor.backgroundColor)
-    && isEdgeMode(editor.edgeMode)
-    && isPaletteSortMode(editor.paletteSortMode)
-    && typeof paletteReduction.enabled === "boolean"
-    && isFiniteNumber(paletteReduction.maximumColors)
-  );
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value));
-}
-
-function hexToColor(hex: string): RgbColor {
-  return [
-    Number.parseInt(hex.slice(1, 3), 16),
-    Number.parseInt(hex.slice(3, 5), 16),
-    Number.parseInt(hex.slice(5, 7), 16),
-  ];
-}
-
-function maskToBase64(mask: Uint8Array): string {
-  const chunkSize = 0x8000;
-  let binary = "";
-  for (let offset = 0; offset < mask.length; offset += chunkSize) {
-    binary += String.fromCharCode(...mask.subarray(offset, offset + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function base64ToMask(value: string, expectedLength: number): Uint8Array | null {
-  try {
-    const binary = atob(value);
-    if (binary.length !== expectedLength) return null;
-    const mask = new Uint8Array(expectedLength);
-    for (let index = 0; index < binary.length; index += 1) mask[index] = binary.charCodeAt(index);
-    return mask;
-  } catch {
-    return null;
-  }
-}
-
-function imageDataToDataUrl(image: ImageData): string {
-  const canvas = document.createElement("canvas");
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("浏览器无法创建图像画布。");
-  context.putImageData(image, 0, 0);
-  return canvas.toDataURL("image/png");
-}
-
-function ImagePane({
-  image,
-  emptyLabel,
-  view,
-  onViewChange,
-  interactionMode,
-  overlayMask,
-  overlayColor,
-  onPaintMask,
-  paneBackgroundColor = null,
-}: ImagePaneProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const paneRef = useRef<HTMLDivElement>(null);
-  const zoomRef = useRef<(deltaY: number) => void>(() => undefined);
-  const dragStartRef = useRef<{
-    pointerId: number;
-    clientX: number;
-    clientY: number;
-    offsetX: number;
-    offsetY: number;
-  } | null>(null);
-  const brushPointRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
-
-  zoomRef.current = (deltaY) => {
-    if (!image) return;
-    const nextScale = getLinearWheelScale(view.scale, deltaY);
-    onViewChange({ ...view, scale: nextScale });
-  };
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !image) return;
-    canvas.width = image.width;
-    canvas.height = image.height;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.imageSmoothingEnabled = false;
-    context.putImageData(image, 0, 0);
-    if (overlayMask && interactionMode !== "pan") {
-      context.save();
-      context.fillStyle = overlayColor;
-      for (let pixelIndex = 0; pixelIndex < overlayMask.length; pixelIndex += 1) {
-        if (overlayMask[pixelIndex] === 1) {
-          context.fillRect(pixelIndex % image.width, Math.floor(pixelIndex / image.width), 1, 1);
-        }
-      }
-      context.restore();
-    }
-  }, [image, interactionMode, overlayColor, overlayMask]);
-
-  useEffect(() => {
-    const pane = paneRef.current;
-    if (!pane || !image) return;
-    const handleCanvasWheel = (event: globalThis.WheelEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      zoomRef.current(event.deltaY);
-    };
-    pane.addEventListener("wheel", handleCanvasWheel, { passive: false });
-    return () => pane.removeEventListener("wheel", handleCanvasWheel);
-  }, [image]);
-
-  const getImagePosition = (event: PointerEvent<HTMLDivElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !image) return null;
-    const bounds = canvas.getBoundingClientRect();
-    if (
-      event.clientX < bounds.left ||
-      event.clientX > bounds.right ||
-      event.clientY < bounds.top ||
-      event.clientY > bounds.bottom
-    ) {
-      return null;
-    }
-    return {
-      x: Math.min(image.width - 1, Math.max(0, Math.floor(((event.clientX - bounds.left) / bounds.width) * image.width))),
-      y: Math.min(image.height - 1, Math.max(0, Math.floor(((event.clientY - bounds.top) / bounds.height) * image.height))),
-    };
-  };
-
-  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (!image) return;
-    if (interactionMode !== "pan") {
-      const position = getImagePosition(event);
-      if (!position) return;
-      event.currentTarget.setPointerCapture(event.pointerId);
-      brushPointRef.current = { pointerId: event.pointerId, ...position };
-      onPaintMask(position, position, interactionMode === "paint");
-      return;
-    }
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragStartRef.current = {
-      pointerId: event.pointerId,
-      clientX: event.clientX,
-      clientY: event.clientY,
-      offsetX: view.offsetX,
-      offsetY: view.offsetY,
-    };
-  };
-
-  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    const brushPoint = brushPointRef.current;
-    if (brushPoint?.pointerId === event.pointerId) {
-      const position = getImagePosition(event);
-      if (position) {
-        onPaintMask(brushPoint, position, interactionMode === "paint");
-        brushPointRef.current = { pointerId: event.pointerId, ...position };
-      }
-      return;
-    }
-    const dragStart = dragStartRef.current;
-    if (!dragStart || dragStart.pointerId !== event.pointerId) return;
-    onViewChange({
-      ...view,
-      offsetX: dragStart.offsetX + event.clientX - dragStart.clientX,
-      offsetY: dragStart.offsetY + event.clientY - dragStart.clientY,
-    });
-  };
-
-  const handlePointerEnd = (event: PointerEvent<HTMLDivElement>) => {
-    if (dragStartRef.current?.pointerId === event.pointerId) dragStartRef.current = null;
-    if (brushPointRef.current?.pointerId === event.pointerId) brushPointRef.current = null;
-  };
-
-  return (
-    <div
-      className={`image-pane ${paneBackgroundColor === null ? "checkerboard" : ""} ${image ? "is-interactive" : ""} ${
-        interactionMode !== "pan" ? "is-painting" : ""
-      }`}
-      ref={paneRef}
-      onPointerCancel={handlePointerEnd}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerEnd}
-      style={paneBackgroundColor === null ? undefined : { backgroundColor: paneBackgroundColor }}
-    >
-      {image ? (
-        <canvas
-          aria-label={emptyLabel}
-          ref={canvasRef}
-          style={{
-            height: image.height * view.scale,
-            transform: `translate(calc(-50% + ${snapToDevicePixel(view.offsetX)}px), calc(-50% + ${snapToDevicePixel(view.offsetY)}px))`,
-            width: image.width * view.scale,
-          }}
-        />
-      ) : (
-        <p>{emptyLabel}</p>
-      )}
-    </div>
+function isCompatibleProjectMemory(
+  memory: ProjectMemory | null,
+  imageKey: string,
+  width: number,
+  height: number,
+): memory is ProjectMemory {
+  return Boolean(
+    memory
+    && memory.imageKey === imageKey
+    && memory.width === width
+    && memory.height === height
+    && memory.protectedMask instanceof Uint8Array
+    && memory.protectedMask.length === width * height
+    && Number.isFinite(memory.selectedThreshold)
+    && Number.isFinite(memory.brushSize)
+    && Number.isFinite(memory.imageView?.zoom)
+    && Number.isFinite(memory.imageView?.offsetX)
+    && Number.isFinite(memory.imageView?.offsetY),
   );
 }
 
@@ -407,301 +108,303 @@ async function loadImage(file: File): Promise<ImageData> {
   }
 }
 
-async function loadImageDataUrl(dataUrl: string): Promise<ImageData> {
-  const image = new Image();
-  image.src = dataUrl;
-  await image.decode();
-  return imageElementToImageData(image);
+function createPreviewImage(
+  source: ImageData,
+  backgroundMask: Uint8Array,
+  mode: PreviewMode,
+): ImageData {
+  const result = new ImageData(new Uint8ClampedArray(source.data), source.width, source.height);
+  for (let pixelIndex = 0; pixelIndex < backgroundMask.length; pixelIndex += 1) {
+    const offset = pixelIndex * 4;
+    const isBackground = backgroundMask[pixelIndex] === 1;
+    if (mode === "mask") {
+      if (source.data[offset + 3] === 0) {
+        result.data[offset + 3] = 0;
+        continue;
+      }
+      const value = isBackground ? 238 : 34;
+      result.data[offset] = value;
+      result.data[offset + 1] = value;
+      result.data[offset + 2] = value;
+      result.data[offset + 3] = 255;
+    } else if (mode === "remove-background" && isBackground) {
+      result.data[offset + 3] = 0;
+    } else if (mode === "remove-foreground" && !isBackground) {
+      result.data[offset + 3] = 0;
+    }
+  }
+  return result;
+}
+
+function countMask(mask: Uint8Array | null): number {
+  if (!mask) return 0;
+  let count = 0;
+  for (const value of mask) count += value;
+  return count;
 }
 
 function App() {
   const [sourceImage, setSourceImage] = useState<ImageData | null>(null);
   const [fileName, setFileName] = useState("");
-  const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<StatusMessage>(() => ({
-    timestamp: formatLogTimestamp(),
-    text: "导入一张 PNG，开始清理统一背景。",
-  }));
-  const message = statusMessage.text;
-  const setMessage = (text: string) => setStatusMessage({ timestamp: formatLogTimestamp(), text });
-  const [isDragging, setIsDragging] = useState(false);
-  const [imageView, setImageView] = useState<ImageView>({ scale: 1, offsetX: 0, offsetY: 0 });
-  const [includeEnclosedAreas, setIncludeEnclosedAreas] = useState(true);
+  const [memoryKey, setMemoryKey] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<AnalysisModel | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus>("idle");
+  const [statusMessage, setStatusMessage] = useState("导入 PNG 开始背景分析。");
+  const [backgroundColor, setBackgroundColor] = useState("#000000");
+  const [localColorThreshold, setLocalColorThreshold] = useState(defaultLocalColorSimilarityThreshold);
+  const [edgeGlowWidth, setEdgeGlowWidth] = useState(defaultEdgeGlowWidth);
+  const [selectedThreshold, setSelectedThreshold] = useState(0);
+  const [protectedMask, setProtectedMask] = useState<Uint8Array | null>(null);
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("pan");
   const [brushSize, setBrushSize] = useState(12);
-  const [protectedMask, setProtectedMask] = useState<Uint8Array | null>(null);
-  const [backgroundColor, setBackgroundColor] = useState("#1C1523");
-  const [edgeMode, setEdgeMode] = useState<EdgeMode>("natural");
-  const [paletteReductionEnabled, setPaletteReductionEnabled] = useState(true);
-  const [maximumPaletteColors, setMaximumPaletteColors] = useState(16);
-  const [paletteSortMode, setPaletteSortMode] = useState<PaletteSortMode>("frequency");
-  const [previewBackgroundMode, setPreviewBackgroundMode] = useState<PreviewBackgroundMode>("checkerboard");
-  const [previewCustomColor, setPreviewCustomColor] = useState("#6B7280");
-  const [autoPreviewEnabled, setAutoPreviewEnabled] = useState(true);
-  const [processedImage, setProcessedImage] = useState<ImageData | null>(null);
-  const [processingStatus, setProcessingStatus] = useState<ProcessingStatus>("dirty");
-  const [processingStats, setProcessingStats] = useState<ImageProcessingStats | null>(null);
-  const [isClosePromptVisible, setIsClosePromptVisible] = useState(false);
-  const [isSavingBeforeClose, setIsSavingBeforeClose] = useState(false);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("remove-background");
+  const [previewBackgroundMode, setPreviewBackgroundMode] = useState<ProjectMemoryPreviewBackgroundMode>("checkerboard");
+  const [customPreviewBackgroundColor, setCustomPreviewBackgroundColor] = useState("#6B7280");
+  const [selectedPixel, setSelectedPixel] = useState<PixelPosition | null>(null);
+  const [imageView, setImageView] = useState<ImageView>(initialView);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const closeApprovedRef = useRef(false);
-  const processingWorkerRef = useRef<Worker | null>(null);
-  const processingRequestIdRef = useRef(0);
-  const autoPreviewTimerRef = useRef<number | null>(null);
-  const updateHighQualityPreviewRef = useRef<() => void>(() => undefined);
-  const suppressNextAutoPreviewRef = useRef(false);
-  const saveProjectRef = useRef<() => Promise<boolean>>(async () => false);
-  const undoEditorRef = useRef<() => void>(() => undefined);
-  const redoEditorRef = useRef<() => void>(() => undefined);
-  const historySourceRef = useRef<ImageData | null>(null);
-  const historyTimerRef = useRef<number | null>(null);
-  const historyTransactionActiveRef = useRef(false);
-  const isApplyingHistoryRef = useRef(false);
-  const lastCommittedSnapshotRef = useRef<EditorHistorySnapshot | null>(null);
-  const undoStackRef = useRef<EditorHistorySnapshot[]>([]);
-  const redoStackRef = useRef<EditorHistorySnapshot[]>([]);
-
-  const protectedPixelCount = useMemo(
-    () => protectedMask?.reduce((count, value) => count + value, 0) ?? 0,
-    [protectedMask],
-  );
-  const palette = useMemo(() => (processedImage ? getImageColors(processedImage) : []), [processedImage]);
-  const sortedPalette = useMemo(() => {
-    if (paletteSortMode === "frequency") return palette;
-    return [...palette].sort((left, right) => (
-      left.lightness - right.lightness
-      || left.hue - right.hue
-      || left.hex.localeCompare(right.hex)
-    ));
-  }, [palette, paletteSortMode]);
-  const entityRgbColorCount = palette.length;
-  const resultPaneBackgroundColor = previewBackgroundMode === "checkerboard"
-    ? null
-    : previewBackgroundMode === "black"
-      ? "#000000"
-      : previewBackgroundMode === "white"
-        ? "#FFFFFF"
-        : previewCustomColor;
-  const previewBackgroundLabel = previewBackgroundMode === "checkerboard"
-    ? "透明棋盘格"
-    : previewBackgroundMode === "black"
-      ? "黑色预览"
-      : previewBackgroundMode === "white"
-        ? "白色预览"
-        : `${previewCustomColor} 预览`;
-
-  const captureEditorSnapshot = (): EditorHistorySnapshot => ({
-    includeEnclosedAreas,
-    brushSize,
-    protectedMask,
-    backgroundColor,
-    edgeMode,
-    paletteReductionEnabled,
-    maximumPaletteColors,
-    previewBackgroundMode,
-    previewCustomColor,
-  });
-
-  const applyEditorSnapshot = (snapshot: EditorHistorySnapshot) => {
-    setIncludeEnclosedAreas(snapshot.includeEnclosedAreas);
-    setBrushSize(snapshot.brushSize);
-    setProtectedMask(snapshot.protectedMask);
-    setBackgroundColor(snapshot.backgroundColor);
-    setEdgeMode(snapshot.edgeMode);
-    setPaletteReductionEnabled(snapshot.paletteReductionEnabled);
-    setMaximumPaletteColors(snapshot.maximumPaletteColors);
-    setPreviewBackgroundMode(snapshot.previewBackgroundMode);
-    setPreviewCustomColor(snapshot.previewCustomColor);
-  };
-
-  const clearHistoryTimer = () => {
-    if (historyTimerRef.current === null) return;
-    window.clearTimeout(historyTimerRef.current);
-    historyTimerRef.current = null;
-  };
-
-  const undoEditor = () => {
-    if (!sourceImage) return;
-    clearHistoryTimer();
-    const target = undoStackRef.current.pop();
-    if (!target) {
-      setMessage("没有可撤销的编辑。");
-      return;
-    }
-    redoStackRef.current.push(captureEditorSnapshot());
-    isApplyingHistoryRef.current = true;
-    historyTransactionActiveRef.current = false;
-    lastCommittedSnapshotRef.current = target;
-    applyEditorSnapshot(target);
-    setMessage("已撤销上一步编辑。");
-  };
-
-  const redoEditor = () => {
-    if (!sourceImage) return;
-    clearHistoryTimer();
-    const target = redoStackRef.current.pop();
-    if (!target) {
-      setMessage("没有可重做的编辑。");
-      return;
-    }
-    undoStackRef.current.push(captureEditorSnapshot());
-    isApplyingHistoryRef.current = true;
-    historyTransactionActiveRef.current = false;
-    lastCommittedSnapshotRef.current = target;
-    applyEditorSnapshot(target);
-    setMessage("已重做上一步编辑。");
-  };
-
-  undoEditorRef.current = undoEditor;
-  redoEditorRef.current = redoEditor;
+  const workerRef = useRef<Worker | null>(null);
+  const memoryKeyRef = useRef<string | null>(null);
+  const pendingMemoryRef = useRef<ProjectMemory | null>(null);
+  const analysisSequenceRef = useRef(0);
+  const requestSequenceRef = useRef(0);
+  const latestAnalysisRequestRef = useRef(0);
+  const latestClassifyRequestRef = useRef(0);
+  const activeAnalysisIdRef = useRef(0);
+  const selectedThresholdRef = useRef(selectedThreshold);
+  const preservedThresholdForAnalysisRef = useRef<number | null>(null);
+  selectedThresholdRef.current = selectedThreshold;
 
   useEffect(() => {
-    const snapshot = captureEditorSnapshot();
-    if (historySourceRef.current !== sourceImage) {
-      clearHistoryTimer();
-      historySourceRef.current = sourceImage;
-      historyTransactionActiveRef.current = false;
-      isApplyingHistoryRef.current = false;
-      undoStackRef.current = [];
-      redoStackRef.current = [];
-      lastCommittedSnapshotRef.current = sourceImage ? snapshot : null;
-      return;
-    }
-    if (!sourceImage) return;
-    if (isApplyingHistoryRef.current) {
-      isApplyingHistoryRef.current = false;
-      historyTransactionActiveRef.current = false;
-      lastCommittedSnapshotRef.current = snapshot;
-      return;
-    }
-    const lastCommitted = lastCommittedSnapshotRef.current;
-    if (!lastCommitted) {
-      lastCommittedSnapshotRef.current = snapshot;
-      return;
-    }
-    if (!historyTransactionActiveRef.current) {
-      undoStackRef.current.push(lastCommitted);
-      if (undoStackRef.current.length > maximumHistoryEntries) undoStackRef.current.shift();
-      redoStackRef.current = [];
-      historyTransactionActiveRef.current = true;
-    }
-    clearHistoryTimer();
-    historyTimerRef.current = window.setTimeout(() => {
-      historyTimerRef.current = null;
-      lastCommittedSnapshotRef.current = snapshot;
-      historyTransactionActiveRef.current = false;
-    }, historyTransactionDelay);
-  }, [
-    sourceImage,
-    includeEnclosedAreas,
-    brushSize,
-    protectedMask,
-    backgroundColor,
-    edgeMode,
-    paletteReductionEnabled,
-    maximumPaletteColors,
-    previewBackgroundMode,
-    previewCustomColor,
-  ]);
-
-  useEffect(() => {
-    if (!sourceImage) return;
-    processingWorkerRef.current?.terminate();
-    processingWorkerRef.current = null;
-    processingRequestIdRef.current += 1;
-    setProcessingStatus("dirty");
-    setProcessingStats(null);
-  }, [
-    sourceImage,
-    includeEnclosedAreas,
-    protectedMask,
-    backgroundColor,
-    edgeMode,
-    paletteReductionEnabled,
-    maximumPaletteColors,
-  ]);
-
-  useEffect(() => {
-    if (autoPreviewTimerRef.current !== null) {
-      window.clearTimeout(autoPreviewTimerRef.current);
-      autoPreviewTimerRef.current = null;
-    }
-    if (!sourceImage || !autoPreviewEnabled || processingStatus !== "dirty") return;
-    if (suppressNextAutoPreviewRef.current) {
-      suppressNextAutoPreviewRef.current = false;
-      return;
-    }
-    autoPreviewTimerRef.current = window.setTimeout(() => {
-      autoPreviewTimerRef.current = null;
-      updateHighQualityPreviewRef.current();
-    }, automaticPreviewDelay);
-    return () => {
-      if (autoPreviewTimerRef.current !== null) {
-        window.clearTimeout(autoPreviewTimerRef.current);
-        autoPreviewTimerRef.current = null;
+    const worker = new Worker(new URL("./backgroundAnalysis.worker.ts", import.meta.url), { type: "module" });
+    workerRef.current = worker;
+    worker.onmessage = (event: MessageEvent<BackgroundWorkerResponse>) => {
+      const response = event.data;
+      if (response.type === "error") {
+        const isCurrent = response.requestId === latestAnalysisRequestRef.current
+          || response.requestId === latestClassifyRequestRef.current;
+        if (!isCurrent) return;
+        setAnalysisStatus("error");
+        setStatusMessage(response.message);
+        return;
       }
+      if (response.type === "analyzed") {
+        if (response.requestId !== latestAnalysisRequestRef.current) return;
+        const restoredMemory = pendingMemoryRef.current;
+        const shouldRestoreMemory = restoredMemory?.imageKey === memoryKeyRef.current;
+        const shouldRestoreThreshold = shouldRestoreMemory
+          && restoredMemory.distanceMetricVersion === backgroundDistanceMetricVersion
+          && restoredMemory.localColorAlgorithmVersion === localColorIslandsAlgorithmVersion;
+        activeAnalysisIdRef.current = response.analysisId;
+        setAnalysis({
+          analysisId: response.analysisId,
+          mergedImage: new ImageData(
+            new Uint8ClampedArray(response.mergedImage),
+            response.width,
+            response.height,
+          ),
+          localColorStats: response.localColorStats,
+          edgeImage: new ImageData(
+            new Uint8ClampedArray(response.edgeImage),
+            response.width,
+            response.height,
+          ),
+          glowMask: new Uint8Array(response.glowMask),
+          edgeGlowStats: response.edgeGlowStats,
+          estimatedBackgroundColor: response.estimatedBackgroundColor,
+          backgroundColor: response.backgroundColor,
+          thresholds: response.thresholds,
+          backgroundMask: new Uint8Array(response.backgroundMask),
+          distances: new Float32Array(response.distances),
+          stats: response.stats,
+        });
+        setBackgroundColor(colorToHex(response.backgroundColor));
+        setSelectedThreshold(shouldRestoreThreshold ? restoredMemory.selectedThreshold : response.selectedThreshold);
+        if (shouldRestoreMemory) pendingMemoryRef.current = null;
+        setAnalysisStatus("ready");
+        setStatusMessage(shouldRestoreMemory
+          ? shouldRestoreThreshold
+            ? "近似颜色、背景分析和图片设置已恢复。"
+            : "已恢复图片设置；上游算法已升级，阈值已重新计算。"
+          : "近似颜色、背景色、双阈值、背景蒙版和边缘半透明已更新。");
+        return;
+      }
+      if (
+        response.requestId !== latestClassifyRequestRef.current
+        || response.analysisId !== activeAnalysisIdRef.current
+      ) return;
+      setAnalysis((current) => current && current.analysisId === response.analysisId
+        ? {
+          ...current,
+          edgeImage: new ImageData(
+            new Uint8ClampedArray(response.edgeImage),
+            response.width,
+            response.height,
+          ),
+          glowMask: new Uint8Array(response.glowMask),
+          edgeGlowStats: response.edgeGlowStats,
+          backgroundMask: new Uint8Array(response.backgroundMask),
+          stats: response.stats,
+        }
+        : current);
+      setAnalysisStatus("ready");
+      setStatusMessage("背景蒙版和边缘半透明已按当前阈值与保护区域更新。");
     };
-  }, [
-    sourceImage,
-    autoPreviewEnabled,
-    processingStatus,
-    includeEnclosedAreas,
-    protectedMask,
-    backgroundColor,
-    edgeMode,
-    paletteReductionEnabled,
-    maximumPaletteColors,
-  ]);
-
-  useEffect(() => () => {
-    processingWorkerRef.current?.terminate();
-    if (autoPreviewTimerRef.current !== null) window.clearTimeout(autoPreviewTimerRef.current);
-    if (historyTimerRef.current !== null) window.clearTimeout(historyTimerRef.current);
+    worker.onerror = () => {
+      setAnalysisStatus("error");
+      setStatusMessage("背景分析 Worker 异常退出。");
+    };
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
-    let isDisposed = false;
-    let unlisten: (() => void) | undefined;
-    void getCurrentWindow()
-      .onCloseRequested((event) => {
-        if (closeApprovedRef.current || !sourceImage) return;
-        event.preventDefault();
-        setIsClosePromptVisible(true);
-      })
-      .then((listener) => {
-        if (isDisposed) listener();
-        else unlisten = listener;
-      })
-      .catch(() => undefined);
-    return () => {
-      isDisposed = true;
-      unlisten?.();
-    };
-  }, [sourceImage]);
+    if (!sourceImage || !workerRef.current) return;
+    const timer = window.setTimeout(() => {
+      const requestId = requestSequenceRef.current + 1;
+      requestSequenceRef.current = requestId;
+      latestAnalysisRequestRef.current = requestId;
+      latestClassifyRequestRef.current = 0;
+      const analysisId = analysisSequenceRef.current + 1;
+      analysisSequenceRef.current = analysisId;
+      activeAnalysisIdRef.current = analysisId;
+      setAnalysisStatus("analyzing");
+      setStatusMessage("正在归并近似颜色并分析背景…");
+      setAnalysis(null);
+      const imageData = new Uint8ClampedArray(sourceImage.data).buffer;
+      const protectionData = protectedMask ? new Uint8Array(protectedMask).buffer : null;
+      const preservedThreshold = preservedThresholdForAnalysisRef.current;
+      preservedThresholdForAnalysisRef.current = null;
+      const request: BackgroundWorkerRequest = {
+        type: "analyze",
+        requestId,
+        analysisId,
+        width: sourceImage.width,
+        height: sourceImage.height,
+        imageData,
+        edgeGlowWidth,
+        localColorThreshold,
+        selectedThreshold: preservedThreshold,
+        backgroundColor: null,
+        protectedMask: protectionData,
+      };
+      workerRef.current?.postMessage(request, {
+        transfer: [imageData, ...(protectionData ? [protectionData] : [])],
+      });
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [localColorThreshold, sourceImage]);
+
+  useEffect(() => {
+    if (!memoryKey || !sourceImage || !protectedMask) return;
+    const timer = window.setTimeout(() => {
+      void saveProjectMemory({
+        imageKey: memoryKey,
+        distanceMetricVersion: backgroundDistanceMetricVersion,
+        localColorAlgorithmVersion: localColorIslandsAlgorithmVersion,
+        localColorThreshold,
+        edgeGlowWidth,
+        width: sourceImage.width,
+        height: sourceImage.height,
+        protectedMask,
+        selectedThreshold,
+        brushSize,
+        previewMode,
+        previewBackgroundMode,
+        customPreviewBackgroundColor,
+        interactionMode,
+        imageView,
+        selectedPixel,
+      }).catch(() => undefined);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [brushSize, customPreviewBackgroundColor, edgeGlowWidth, imageView, interactionMode, localColorThreshold, memoryKey, previewBackgroundMode, previewMode, protectedMask, selectedPixel, selectedThreshold, sourceImage]);
+
+  useEffect(() => {
+    if (!analysis || !sourceImage || !workerRef.current) return;
+    const timer = window.setTimeout(() => {
+      const requestId = requestSequenceRef.current + 1;
+      requestSequenceRef.current = requestId;
+      latestClassifyRequestRef.current = requestId;
+      const protectionData = protectedMask ? new Uint8Array(protectedMask).buffer : null;
+      const request: BackgroundWorkerRequest = {
+        type: "classify",
+        requestId,
+        analysisId: analysis.analysisId,
+        selectedThreshold,
+        edgeGlowWidth,
+        protectedMask: protectionData,
+      };
+      setAnalysisStatus("classifying");
+      workerRef.current?.postMessage(request, {
+        transfer: protectionData ? [protectionData] : [],
+      });
+    }, 45);
+    return () => window.clearTimeout(timer);
+  }, [analysis?.analysisId, edgeGlowWidth, protectedMask, selectedThreshold, sourceImage]);
 
   const importFile = async (file: File | undefined) => {
     if (!file) return;
-    if (file.type !== "image/png") {
-      setMessage("首版仅支持 PNG 文件。");
+    if (file.type !== "image/png" && !file.name.toLowerCase().endsWith(".png")) {
+      setAnalysisStatus("error");
+      setStatusMessage("当前仅支持 PNG 图片。");
       return;
     }
     try {
-      const image = await loadImage(file);
+      setAnalysisStatus("analyzing");
+      setStatusMessage("正在读取 PNG…");
+      const fileBytes = await file.arrayBuffer();
+      const [image, imageKey] = await Promise.all([
+        loadImage(file),
+        createImageMemoryKey(fileBytes),
+      ]);
+      const savedMemory = await loadProjectMemory(imageKey).catch(() => null);
+      const memory = isCompatibleProjectMemory(savedMemory, imageKey, image.width, image.height)
+        ? savedMemory
+        : null;
+      memoryKeyRef.current = imageKey;
+      pendingMemoryRef.current = memory;
+      preservedThresholdForAnalysisRef.current = null;
       setSourceImage(image);
       setFileName(file.name);
-      setProjectPath(null);
-      setImageView({ scale: 1, offsetX: 0, offsetY: 0 });
-      setProtectedMask(new Uint8Array(image.width * image.height));
-      setBackgroundColor(colorToHex(estimateCornerColor(image)));
-      setProcessedImage(null);
-      setProcessingStats(null);
-      setInteractionMode("pan");
-      setMessage(
-        `已导入 ${file.name}（${image.width} × ${image.height}）${autoPreviewEnabled ? "，即将自动更新预览。" : "，请更新高质量预览。"}`,
+      setMemoryKey(imageKey);
+      setProtectedMask(memory ? new Uint8Array(memory.protectedMask) : new Uint8Array(image.width * image.height));
+      setSelectedThreshold(
+        memory?.distanceMetricVersion === backgroundDistanceMetricVersion
+          && memory.localColorAlgorithmVersion === localColorIslandsAlgorithmVersion
+          ? memory.selectedThreshold
+          : 0,
       );
+      setLocalColorThreshold(
+        memory?.localColorAlgorithmVersion === localColorIslandsAlgorithmVersion
+          && Number.isFinite(memory.localColorThreshold)
+          ? Math.min(0.1, Math.max(0, memory.localColorThreshold))
+          : defaultLocalColorSimilarityThreshold,
+      );
+      setEdgeGlowWidth(
+        memory && Number.isFinite(memory.edgeGlowWidth)
+          ? Math.min(0.3, Math.max(0, memory.edgeGlowWidth ?? defaultEdgeGlowWidth))
+          : defaultEdgeGlowWidth,
+      );
+      setBrushSize(memory ? Math.min(80, Math.max(1, Math.round(memory.brushSize))) : initialBrushSize);
+      setPreviewMode(memory ? memory.previewMode : "remove-background");
+      setPreviewBackgroundMode(normalizeProjectMemoryPreviewBackgroundMode(memory?.previewBackgroundMode));
+      setCustomPreviewBackgroundColor(normalizeProjectMemoryPreviewBackgroundColor(memory?.customPreviewBackgroundColor));
+      setInteractionMode(memory ? memory.interactionMode : "pan");
+      setSelectedPixel(memory?.selectedPixel ?? null);
+      setImageView(memory ? {
+        zoom: Math.min(32, Math.max(0.2, memory.imageView.zoom)),
+        offsetX: memory.imageView.offsetX,
+        offsetY: memory.imageView.offsetY,
+      } : initialView);
+      setAnalysis(null);
     } catch {
-      setMessage("无法读取该 PNG，请确认文件没有损坏。");
+      setAnalysisStatus("error");
+      setStatusMessage("无法读取 PNG，请检查文件是否损坏。");
     }
   };
 
@@ -710,306 +413,110 @@ function App() {
     event.target.value = "";
   };
 
-  const createProjectFile = () => {
-    if (!sourceImage) return null;
-    const project: PixelCleanProject = {
-      kind: "pixel-clean-project",
-      version: 3,
-      source: {
-        fileName: fileName || "pixel.png",
-        pngDataUrl: imageDataToDataUrl(sourceImage),
-      },
-      editor: {
-        includeEnclosedAreas,
-        imageView,
-        brushSize,
-        interactionMode,
-        autoPreviewEnabled,
-        previewBackground: {
-          mode: previewBackgroundMode,
-          customColor: previewCustomColor,
-        },
-        backgroundColor,
-        edgeMode,
-        paletteSortMode,
-        paletteReduction: {
-          enabled: paletteReductionEnabled,
-          maximumColors: maximumPaletteColors,
-        },
-        protectedMask: maskToBase64(protectedMask ?? new Uint8Array(sourceImage.width * sourceImage.height)),
-      },
-    };
-    return {
-      contents: JSON.stringify(project, null, 2),
-      suggestedName: `${fileName.replace(/\.png$/i, "") || "pixel"}.pixelclean.json`,
-    };
-  };
-
-  const restoreProject = async (contents: string, path: string) => {
-    try {
-      const projectName = path.split(/[/\\]/).pop() ?? "工程文件";
-      const project: unknown = JSON.parse(contents);
-      if (!isPixelCleanProject(project)) throw new Error("不是有效的 Pixel Clean 工程文件。");
-      const image = await loadImageDataUrl(project.source.pngDataUrl);
-      const mask = base64ToMask(project.editor.protectedMask, image.width * image.height);
-      if (!mask) throw new Error("工程保护蒙版无效。");
-      setSourceImage(image);
-      setFileName(project.source.fileName);
-      setProjectPath(path);
-      setIncludeEnclosedAreas(project.editor.includeEnclosedAreas);
-      setImageView({
-        scale: clamp(project.editor.imageView.scale, minimumScale, maximumScale),
-        offsetX: project.editor.imageView.offsetX,
-        offsetY: project.editor.imageView.offsetY,
-      });
-      setBrushSize(clamp(project.editor.brushSize, 1, 80));
-      setInteractionMode(project.editor.interactionMode);
-      setProtectedMask(mask);
-      setProcessedImage(null);
-      setProcessingStats(null);
-      setBackgroundColor(project.editor.backgroundColor.toUpperCase());
-      setEdgeMode(project.editor.edgeMode);
-      setPreviewBackgroundMode(project.editor.previewBackground.mode);
-      setPreviewCustomColor(project.editor.previewBackground.customColor.toUpperCase());
-      setAutoPreviewEnabled(project.editor.autoPreviewEnabled);
-      setPaletteReductionEnabled(project.editor.paletteReduction.enabled);
-      setMaximumPaletteColors(clamp(project.editor.paletteReduction.maximumColors, 8, 20));
-      setPaletteSortMode(project.editor.paletteSortMode);
-      setMessage(
-        `已打开工程 ${projectName}${project.editor.autoPreviewEnabled ? "，即将自动更新预览。" : "，请强制渲染预览。"}`,
-      );
-    } catch {
-      setMessage("无法打开工程文件，请确认它未损坏且来自 Pixel Clean。");
-    }
-  };
-
-  const saveProject = async () => {
-    const projectFile = createProjectFile();
-    if (!projectFile) return false;
-    try {
-      let targetPath = projectPath;
-      if (targetPath === null) {
-        targetPath = await save({
-          defaultPath: projectFile.suggestedName,
-          filters: [{ name: "Pixel Clean 工程", extensions: ["json"] }],
-        });
-        if (targetPath === null) {
-          setMessage("已取消保存工程。");
-          return false;
-        }
-      }
-      await invoke("write_project_file", { path: targetPath, contents: projectFile.contents });
-      setProjectPath(targetPath);
-      setMessage(`工程已保存：${targetPath.split(/[/\\]/).pop() ?? targetPath}`);
-      return true;
-    } catch {
-      setMessage(projectPath ? "无法写入当前工程文件，工程未保存。" : "无法保存工程文件，工程未保存。");
-      return false;
-    }
-  };
-
-  saveProjectRef.current = saveProject;
-
-  useEffect(() => {
-    const handleKeyboardShortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-      const key = event.key.toLowerCase();
-      if (key === "s" && !event.shiftKey) {
-        event.preventDefault();
-        void saveProjectRef.current();
-        return;
-      }
-      if (key === "z") {
-        event.preventDefault();
-        if (event.shiftKey) redoEditorRef.current();
-        else undoEditorRef.current();
-        return;
-      }
-      if (key === "y" && !event.shiftKey) {
-        event.preventDefault();
-        redoEditorRef.current();
-      }
-    };
-    window.addEventListener("keydown", handleKeyboardShortcut);
-    return () => window.removeEventListener("keydown", handleKeyboardShortcut);
-  }, []);
-
-  const closeDesktopWindow = async () => {
-    closeApprovedRef.current = true;
-    setIsClosePromptVisible(false);
-    try {
-      await getCurrentWindow().close();
-    } catch {
-      closeApprovedRef.current = false;
-      setMessage("无法关闭桌面窗口。");
-    }
-  };
-
-  const saveAndClose = async () => {
-    setIsSavingBeforeClose(true);
-    const isSaved = await saveProject();
-    setIsSavingBeforeClose(false);
-    if (isSaved) await closeDesktopWindow();
-  };
-
-  const openProjectDialog = async () => {
-    try {
-      const path = await open({
-        directory: false,
-        filters: [{ name: "Pixel Clean 工程", extensions: ["json"] }],
-        multiple: false,
-      });
-      if (typeof path !== "string") return;
-      const contents = await invoke<string>("read_project_file", { path });
-      await restoreProject(contents, path);
-    } catch {
-      setMessage("无法打开桌面工程文件对话框。");
-    }
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+  const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
-    setIsDragging(false);
+    setIsDraggingFile(false);
     void importFile(event.dataTransfer.files[0]);
   };
 
-  const paintProtection = (from: PixelPosition, to: PixelPosition, shouldPaint: boolean) => {
+  const paintProtection = (from: PixelPosition, to: PixelPosition, shouldProtect: boolean) => {
     if (!sourceImage) return;
-    setProtectedMask((mask) => paintProtectionMask(
-      mask ?? new Uint8Array(sourceImage.width * sourceImage.height),
+    setProtectedMask((current) => paintProtectionMask(
+      current ?? new Uint8Array(sourceImage.width * sourceImage.height),
       sourceImage.width,
       sourceImage.height,
       from,
       to,
       brushSize,
-      shouldPaint,
+      shouldProtect,
     ));
   };
 
-  const updateHighQualityPreview = () => {
-    if (!sourceImage) return;
-    if (autoPreviewTimerRef.current !== null) {
-      window.clearTimeout(autoPreviewTimerRef.current);
-      autoPreviewTimerRef.current = null;
-    }
-    processingWorkerRef.current?.terminate();
-    const worker = new Worker(new URL("./imageProcessing.worker.ts", import.meta.url), { type: "module" });
-    processingWorkerRef.current = worker;
-    const requestId = processingRequestIdRef.current + 1;
-    processingRequestIdRef.current = requestId;
-    const width = sourceImage.width;
-    const height = sourceImage.height;
-    const imageData = new Uint8ClampedArray(sourceImage.data);
-    const protectedData = protectedMask ? new Uint8Array(protectedMask) : null;
+  const previewImage = useMemo(() => (
+    analysis
+      ? previewMode === "remove-background"
+        ? analysis.edgeImage
+        : createPreviewImage(analysis.mergedImage, analysis.backgroundMask, previewMode)
+      : null
+  ), [analysis, previewMode]);
+  const previewBackgroundColor = previewBackgroundMode === "checkerboard"
+    ? null
+    : previewBackgroundMode === "black"
+      ? "#000000"
+      : previewBackgroundMode === "white"
+        ? "#FFFFFF"
+        : customPreviewBackgroundColor;
 
-    setProcessingStatus("processing");
-    setMessage("正在执行全分辨率高质量处理…");
-    worker.onmessage = (event: MessageEvent<ProcessingWorkerResponse>) => {
-      if (event.data.id !== processingRequestIdRef.current) return;
-      worker.terminate();
-      processingWorkerRef.current = null;
-      if (event.data.error || !event.data.imageData || !event.data.stats) {
-        suppressNextAutoPreviewRef.current = true;
-        setProcessingStatus("dirty");
-        setMessage(event.data.error ?? "图像处理失败。");
-        return;
-      }
-      setProcessedImage(new ImageData(new Uint8ClampedArray(event.data.imageData), width, height));
-      setProcessingStats(event.data.stats);
-      setProcessingStatus("ready");
-      setMessage(
-        `高质量预览已更新：${event.data.stats.originalColorCount.toLocaleString()} 色规整为 ${event.data.stats.reducedColorCount.toLocaleString()} 色，恢复 ${event.data.stats.decontaminatedEdgePixels.toLocaleString()} 个边缘像素。`,
-      );
-    };
-    worker.onerror = () => {
-      if (requestId !== processingRequestIdRef.current) return;
-      worker.terminate();
-      processingWorkerRef.current = null;
-      suppressNextAutoPreviewRef.current = true;
-      setProcessingStatus("dirty");
-      setMessage("高质量处理进程异常退出，请重试。");
-    };
-
-    const imageBuffer = imageData.buffer as ArrayBuffer;
-    const protectedBuffer = protectedData?.buffer as ArrayBuffer | undefined;
-    worker.postMessage(
-      {
-        id: requestId,
-        width,
-        height,
-        imageData: imageBuffer,
-        protectedMask: protectedBuffer ?? null,
-        includeEnclosedAreas,
-        backgroundColor: hexToColor(backgroundColor),
-        edgeMode,
-        paletteReduction: {
-          enabled: paletteReductionEnabled,
-          maximumColors: maximumPaletteColors,
-        },
-      },
-      [imageBuffer, ...(protectedBuffer ? [protectedBuffer] : [])],
+  const protectedPixelCount = useMemo(() => countMask(protectedMask), [protectedMask]);
+  const selectedPixelDetail = useMemo(() => {
+    if (!selectedPixel || !sourceImage || !analysis) return null;
+    const pixelIndex = selectedPixel.y * sourceImage.width + selectedPixel.x;
+    const offset = pixelIndex * 4;
+    const sourceRgb: RgbColor = [
+      sourceImage.data[offset],
+      sourceImage.data[offset + 1],
+      sourceImage.data[offset + 2],
+    ];
+    const mergedRgb: RgbColor = [
+      analysis.mergedImage.data[offset],
+      analysis.mergedImage.data[offset + 1],
+      analysis.mergedImage.data[offset + 2],
+    ];
+    const alpha = analysis.mergedImage.data[offset + 3];
+    const distanceComponents = getDirectionalBackgroundDistance(
+      rgbToOklab(...mergedRgb),
+      rgbToOklab(...analysis.backgroundColor),
     );
-  };
+    return {
+      ...selectedPixel,
+      sourceColor: colorToHex(sourceRgb),
+      mergedColor: colorToHex(mergedRgb),
+      outputColor: colorToHex([
+        analysis.edgeImage.data[offset],
+        analysis.edgeImage.data[offset + 1],
+        analysis.edgeImage.data[offset + 2],
+      ]),
+      outputAlpha: analysis.edgeImage.data[offset + 3],
+      isGlow: analysis.glowMask[pixelIndex] === 1,
+      alpha,
+      deltaLightness: distanceComponents.deltaLightness,
+      deltaChroma: distanceComponents.deltaChroma,
+      deltaHue: distanceComponents.deltaHue,
+      distance: analysis.distances[pixelIndex],
+      classification: protectedMask?.[pixelIndex] === 1
+        ? "受保护前景"
+        : alpha === 0
+          ? "透明像素"
+          : analysis.backgroundMask[pixelIndex] === 1
+            ? "背景"
+            : "前景",
+    };
+  }, [analysis, protectedMask, selectedPixel, sourceImage]);
 
-  updateHighQualityPreviewRef.current = updateHighQualityPreview;
-
-  const cancelProcessing = () => {
-    processingWorkerRef.current?.terminate();
-    processingWorkerRef.current = null;
-    processingRequestIdRef.current += 1;
-    suppressNextAutoPreviewRef.current = true;
-    setProcessingStatus("dirty");
-    setMessage("已取消处理，当前预览仍是旧结果。");
-  };
-
-  const exportImage = () => {
-    if (!processedImage) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = processedImage.width;
-    canvas.height = processedImage.height;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.putImageData(processedImage, 0, 0);
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = `${fileName.replace(/\.png$/i, "") || "pixel"}-transparent.png`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-    }, "image/png");
-  };
+  const processingLabel = analysisStatus === "analyzing"
+    ? "分析中"
+    : analysisStatus === "classifying"
+      ? "分类中"
+      : analysisStatus === "ready"
+        ? "已就绪"
+        : analysisStatus === "error"
+          ? "需要处理"
+          : "等待图片";
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <p className="eyebrow">PIXEL CLEAN · MVP</p>
-          <h1>像素图清理台</h1>
+        <div className="product-title">
+          <span className="product-mark" aria-hidden="true">PC</span>
+          <div>
+            <h1>Pixel Clean</h1>
+            <p>2.0 alpha · 背景分析管线</p>
+          </div>
         </div>
-        <div className="toolbar-actions">
-          <button className="secondary" onClick={() => fileInputRef.current?.click()} type="button">
+        <div className="topbar-actions">
+          <span className={`status-chip is-${analysisStatus}`}>{processingLabel}</span>
+          <button className="button secondary" onClick={() => fileInputRef.current?.click()} type="button">
             导入 PNG
-          </button>
-          <button className="secondary" onClick={() => void openProjectDialog()} type="button">
-            打开工程
-          </button>
-          <button
-            className="secondary"
-            disabled={!sourceImage}
-            onClick={() => void saveProject()}
-            title="保存工程（Command/Ctrl + S）"
-            type="button"
-          >
-            保存工程
-          </button>
-          <button
-            className="primary"
-            disabled={!processedImage || processingStatus !== "ready"}
-            onClick={exportImage}
-            type="button"
-          >
-            导出透明 PNG
           </button>
           <input accept="image/png" hidden onChange={handleFileChange} ref={fileInputRef} type="file" />
         </div>
@@ -1017,223 +524,31 @@ function App() {
 
       <section className="workspace">
         <section
-          className={`canvas-area ${isDragging ? "is-dragging" : ""}`}
+          className={`canvas-area ${isDraggingFile ? "is-file-dragging" : ""}`}
           onDragEnter={(event) => {
             event.preventDefault();
-            setIsDragging(true);
+            setIsDraggingFile(true);
           }}
+          onDragLeave={() => setIsDraggingFile(false)}
           onDragOver={(event) => event.preventDefault()}
-          onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
         >
-          {!sourceImage && (
-            <button className="dropzone" onClick={() => fileInputRef.current?.click()} type="button">
-              <span>拖入 PNG 图片</span>
-              <small>或点击选择文件</small>
-            </button>
-          )}
-          <div className="comparison-grid">
-            <section className="preview-card">
-              <div className="preview-heading">
-                <span>原图</span>
-                {sourceImage && <small>{sourceImage.width} × {sourceImage.height}</small>}
-              </div>
-              <ImagePane
-                emptyLabel="原图将在这里显示"
-                image={sourceImage}
-                interactionMode={interactionMode}
-                onViewChange={setImageView}
-                onPaintMask={paintProtection}
-                overlayColor="rgba(229, 134, 255, 0.42)"
-                overlayMask={protectedMask}
-                view={imageView}
-              />
-            </section>
-            <section className="preview-card">
-              <div className="preview-heading">
-                <span>处理结果</span>
-                <small>{previewBackgroundLabel}</small>
-              </div>
-              <ImagePane
-                emptyLabel="处理结果将在这里显示"
-                image={processedImage}
-                interactionMode={interactionMode}
-                onViewChange={setImageView}
-                onPaintMask={paintProtection}
-                overlayColor="rgba(229, 134, 255, 0.42)"
-                overlayMask={protectedMask}
-                paneBackgroundColor={resultPaneBackgroundColor}
-                view={imageView}
-              />
-            </section>
-          </div>
-          <div className="canvas-footer">
-            <p className="status-message">
-              <time>{statusMessage.timestamp}</time>
-              <span>{message}</span>
-            </p>
-            <div className="view-controls" aria-label="画布视图控制">
-              <button
-                aria-label="缩小"
-                disabled={!sourceImage || imageView.scale <= 1}
-                onClick={() => setImageView((view) => ({ ...view, scale: getIntegerButtonScale(view.scale, -1) }))}
-                type="button"
-              >
-                −
-              </button>
-              <output
-                className={Number.isInteger(imageView.scale) ? "" : "is-fractional"}
-                title={Number.isInteger(imageView.scale) ? "整数像素倍率" : "连续浏览倍率；点击 − 或 + 回到整数像素倍率"}
-              >
-                {Math.round(imageView.scale * 1000) / 10}%
-              </output>
-              <button
-                aria-label="放大"
-                disabled={!sourceImage || imageView.scale >= maximumScale}
-                onClick={() => setImageView((view) => ({ ...view, scale: getIntegerButtonScale(view.scale, 1) }))}
-                type="button"
-              >
-                +
-              </button>
-              <button
-                className="reset-view"
-                disabled={!sourceImage}
-                onClick={() => setImageView({ scale: 1, offsetX: 0, offsetY: 0 })}
-                type="button"
-              >
-                1:1 重置
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <aside className="inspector">
-          <section className="panel-section">
-            <div className="section-title">
-              <h2>背景移除</h2>
-              <span className="badge">第一步</span>
-            </div>
-            <p className="help-text">自动分析背景波动，并从边缘混色中恢复干净的前景颜色与透明度。</p>
-            <div className="color-sample">
-              <input
-                aria-label="背景色"
-                disabled={!sourceImage}
-                onChange={(event) => setBackgroundColor(event.target.value.toUpperCase())}
-                type="color"
-                value={backgroundColor}
-              />
-              <div>
-                <small>处理背景色</small>
-                <strong>{backgroundColor}</strong>
-              </div>
-            </div>
-            <p className="control-label">边缘输出</p>
-            <div className="edge-mode-control" aria-label="边缘输出模式">
-              <button
-                className={edgeMode === "natural" ? "is-active" : ""}
-                disabled={!sourceImage}
-                onClick={() => setEdgeMode("natural")}
-                type="button"
-              >
-                <strong>自然边缘</strong>
-                <small>恢复半透明覆盖率</small>
-              </button>
-              <button
-                className={edgeMode === "hard" ? "is-active" : ""}
-                disabled={!sourceImage}
-                onClick={() => setEdgeMode("hard")}
-                type="button"
-              >
-                <strong>硬像素边缘</strong>
-                <small>仅输出透明或不透明</small>
-              </button>
-            </div>
-            <label className="toggle-row">
-              <input
-                checked={includeEnclosedAreas}
-                onChange={(event) => setIncludeEnclosedAreas(event.target.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>移除封闭背景</strong>
-                <small>清除圆环、边框等封闭区域内匹配的背景色。</small>
-              </span>
-            </label>
-            <p className="safety-note">若主体与背景颜色接近，请使用保护画笔后重新渲染。</p>
-          </section>
-
-          <section className="panel-section preview-background-section">
-            <div className="section-title">
-              <h2>结果预览背景</h2>
-              <span className="badge muted">仅预览</span>
-            </div>
-            <p className="help-text">切换右侧处理结果的底色，用于检查亮边、暗边和半透明像素。</p>
-            <div className="preview-background-options">
-              <button
-                className={previewBackgroundMode === "checkerboard" ? "is-active" : ""}
-                onClick={() => setPreviewBackgroundMode("checkerboard")}
-                type="button"
-              >
-                棋盘格
-              </button>
-              <button
-                className={previewBackgroundMode === "black" ? "is-active" : ""}
-                onClick={() => setPreviewBackgroundMode("black")}
-                type="button"
-              >
-                黑色
-              </button>
-              <button
-                className={previewBackgroundMode === "white" ? "is-active" : ""}
-                onClick={() => setPreviewBackgroundMode("white")}
-                type="button"
-              >
-                白色
-              </button>
-              <button
-                className={previewBackgroundMode === "custom" ? "is-active" : ""}
-                onClick={() => setPreviewBackgroundMode("custom")}
-                type="button"
-              >
-                自定义
-              </button>
-            </div>
-            <label className="preview-custom-color">
-              <span>自定义底色</span>
-              <input
-                onChange={(event) => {
-                  setPreviewCustomColor(event.target.value.toUpperCase());
-                  setPreviewBackgroundMode("custom");
-                }}
-                type="color"
-                value={previewCustomColor}
-              />
-              <code>{previewCustomColor}</code>
-            </label>
-            <p className="preview-export-note">此设置不写入 PNG 像素；导出文件仍保持透明背景。</p>
-          </section>
-
-          <section className="panel-section">
-            <div className="section-title">
-              <h2>保护区域</h2>
-              <span className="badge">精细处理</span>
-            </div>
-            <p className="help-text">保护区域不会被背景剔除，但仍会参与最终的相似颜色规整。</p>
-            <div className="tool-choice-row">
+          <div className="canvas-toolbar">
+            <div className="view-tools" aria-label="画布工具">
               <button
                 className={interactionMode === "pan" ? "is-active" : ""}
                 onClick={() => setInteractionMode("pan")}
                 type="button"
               >
-                拖动画布
+                移动
               </button>
               <button
-                className={interactionMode === "paint" ? "is-active" : ""}
+                className={interactionMode === "protect" ? "is-active" : ""}
                 disabled={!sourceImage}
-                onClick={() => setInteractionMode("paint")}
+                onClick={() => setInteractionMode("protect")}
                 type="button"
               >
-                保护画笔
+                保护
               </button>
               <button
                 className={interactionMode === "erase" ? "is-active" : ""}
@@ -1241,174 +556,320 @@ function App() {
                 onClick={() => setInteractionMode("erase")}
                 type="button"
               >
-                清除画笔
+                擦除
               </button>
             </div>
-            {interactionMode !== "pan" && (
-              <>
-                <label className="range-label" htmlFor="brush-size">
-                  <span>画笔直径</span>
-                  <output>{brushSize} px</output>
-                </label>
-                <input
-                  id="brush-size"
-                  max="80"
-                  min="1"
-                  onChange={(event) => setBrushSize(Number(event.target.value))}
-                  type="range"
-                  value={brushSize}
-                />
-              </>
+            <div className="zoom-tools" aria-label="缩放控制">
+              <button
+                aria-label="缩小"
+                disabled={!sourceImage}
+                onClick={() => setImageView((view) => ({ ...view, zoom: Math.max(0.2, view.zoom / 1.25) }))}
+                type="button"
+              >
+                −
+              </button>
+              <output>{Math.round(imageView.zoom * 100)}%</output>
+              <button
+                aria-label="放大"
+                disabled={!sourceImage}
+                onClick={() => setImageView((view) => ({ ...view, zoom: Math.min(32, view.zoom * 1.25) }))}
+                type="button"
+              >
+                +
+              </button>
+              <button
+                disabled={!sourceImage}
+                onClick={() => setImageView(initialView)}
+                type="button"
+              >
+                适应
+              </button>
+            </div>
+          </div>
+
+          {!sourceImage && (
+            <button className="empty-import" onClick={() => fileInputRef.current?.click()} type="button">
+              <strong>导入 PNG</strong>
+              <span>或将图片拖入窗口</span>
+            </button>
+          )}
+
+          <div className="comparison-grid">
+            <section className="preview-panel">
+              <header>
+                <h2>原图</h2>
+                <span>{sourceImage ? `${sourceImage.width} × ${sourceImage.height}` : "等待导入"}</span>
+              </header>
+              <ImageViewport
+                image={sourceImage}
+                interactionMode={interactionMode}
+                label="原图"
+                onPaintProtection={paintProtection}
+                onSelectPixel={setSelectedPixel}
+                onViewChange={setImageView}
+                protectionMask={protectedMask}
+                selectedPixel={selectedPixel}
+                view={imageView}
+              />
+            </section>
+            <section className="preview-panel">
+              <header>
+                <h2>处理结果</h2>
+                <span>{previewMode === "mask" ? "二值蒙版" : previewMode === "remove-background" ? "去除背景最终图" : "去除前景"}</span>
+              </header>
+              <ImageViewport
+                image={previewImage}
+                interactionMode={interactionMode}
+                label="背景分类结果"
+                onPaintProtection={paintProtection}
+                onSelectPixel={setSelectedPixel}
+                onViewChange={setImageView}
+                previewBackgroundColor={previewBackgroundColor}
+                protectionMask={protectedMask}
+                selectedPixel={selectedPixel}
+                view={imageView}
+              />
+            </section>
+          </div>
+
+          <footer className="canvas-status">
+            <div>
+              <strong>{fileName || "未导入图片"}</strong>
+              <span>{statusMessage}</span>
+            </div>
+            {analysis && (
+              <div className="status-metrics">
+                <span>背景 <strong>{analysis.stats.backgroundPixelCount.toLocaleString()}</strong></span>
+                <span>前景 <strong>{analysis.stats.foregroundPixelCount.toLocaleString()}</strong></span>
+                <span>保护 <strong>{analysis.stats.protectedPixelCount.toLocaleString()}</strong></span>
+              </div>
             )}
-            {interactionMode === "paint" && <p className="selection-tip">在原图或结果图上拖拽，涂抹需要保留为前景的区域。</p>}
-            {interactionMode === "erase" && <p className="selection-tip">涂抹紫色覆盖层，恢复该处的图像处理。</p>}
-            {protectedPixelCount > 0 ? (
-              <div className="protected-status">
-                <span>已保护 {protectedPixelCount} px</span>
-                <button onClick={() => setProtectedMask(sourceImage ? new Uint8Array(sourceImage.width * sourceImage.height) : null)} type="button">
-                  清除
-                </button>
+          </footer>
+        </section>
+
+        <aside className="inspector">
+          <section className="module-section">
+            <div className="module-heading">
+              <span>01</span>
+              <div><h2>近似颜色归并</h2><small>四邻域动态平均色岛屿</small></div>
+            </div>
+            <div className="local-color-control">
+              <div>
+                <label htmlFor="local-color-threshold">近似阈值</label>
+                <output>{localColorThreshold.toFixed(6)}</output>
+              </div>
+              <input
+                disabled={!analysis || analysisStatus === "analyzing"}
+                id="local-color-threshold"
+                max="0.1"
+                min="0"
+                onChange={(event) => {
+                  preservedThresholdForAnalysisRef.current = selectedThresholdRef.current;
+                  setLocalColorThreshold(Number(event.target.value));
+                }}
+                step="0.001"
+                type="range"
+                value={localColorThreshold}
+              />
+            </div>
+            {analysis && (
+              <div className="local-color-summary">
+                <div><span>像素岛屿</span><strong>{analysis.localColorStats.islandCount.toLocaleString()}</strong></div>
+                <div><span>替换像素</span><strong>{analysis.localColorStats.replacedPixelCount.toLocaleString()}</strong></div>
+                <div><span>输入颜色</span><strong>{analysis.localColorStats.inputColorCount.toLocaleString()}</strong></div>
+                <div><span>输出颜色</span><strong>{analysis.localColorStats.outputColorCount.toLocaleString()}</strong></div>
+              </div>
+            )}
+          </section>
+
+          <section className="module-section">
+            <div className="module-heading">
+              <span>02</span>
+              <div><h2>背景代表色</h2><small>四角非透明像素中位数</small></div>
+            </div>
+            <div className="color-control" aria-label={`自动估算背景色 ${backgroundColor}`}>
+              <span className="color-swatch" style={{ backgroundColor }} aria-hidden="true" />
+              <span><small>当前背景色</small><code>{backgroundColor}</code></span>
+            </div>
+            <div className="module-output">
+              <span>自动估算</span>
+              <code>{analysis ? colorToHex(analysis.estimatedBackgroundColor) : "—"}</code>
+            </div>
+          </section>
+
+          <section className="module-section">
+            <div className="module-heading">
+              <span>03</span>
+              <div><h2>自适应双阈值</h2><small>方向加权 OKLCH 距离分布</small></div>
+            </div>
+            <ThresholdControl
+              disabled={!analysis || analysisStatus === "analyzing"}
+              loose={analysis?.thresholds.loose ?? 0.014}
+              onChange={setSelectedThreshold}
+              strict={analysis?.thresholds.strict ?? 0.006}
+              value={selectedThreshold}
+            />
+          </section>
+
+          <section className="module-section">
+            <div className="module-heading">
+              <span>04</span>
+              <div><h2>保护蒙版</h2><small>保护像素强制归类为前景</small></div>
+            </div>
+            <div className="brush-control">
+              <label htmlFor="brush-size">画笔直径</label>
+              <output>{brushSize} px</output>
+              <input
+                disabled={!sourceImage}
+                id="brush-size"
+                max="80"
+                min="1"
+                onChange={(event) => setBrushSize(Number(event.target.value))}
+                type="range"
+                value={brushSize}
+              />
+            </div>
+            <div className="protection-summary">
+              <span>已保护 <strong>{protectedPixelCount.toLocaleString()}</strong> px</span>
+              <button
+                disabled={!sourceImage || protectedPixelCount === 0}
+                onClick={() => setProtectedMask(sourceImage ? new Uint8Array(sourceImage.width * sourceImage.height) : null)}
+                type="button"
+              >
+                清除
+              </button>
+            </div>
+          </section>
+
+          <section className="module-section">
+            <div className="module-heading">
+              <span>05</span>
+              <div><h2>背景蒙版</h2><small>单阈值逐像素分类</small></div>
+            </div>
+            <div className="segmented-control preview-modes" aria-label="分类结果显示模式">
+              <button aria-pressed={previewMode === "remove-background"} onClick={() => setPreviewMode("remove-background")} type="button">去背景</button>
+              <button aria-pressed={previewMode === "remove-foreground"} onClick={() => setPreviewMode("remove-foreground")} type="button">去前景</button>
+              <button aria-pressed={previewMode === "mask"} onClick={() => setPreviewMode("mask")} type="button">蒙版</button>
+            </div>
+            <div className="preview-background-control">
+              <span>预览底色</span>
+              <div aria-label="预览底色" role="group">
+                <button
+                  aria-label="透明棋盘格"
+                  aria-pressed={previewBackgroundMode === "checkerboard"}
+                  className="preview-background-swatch is-checkerboard"
+                  disabled={!sourceImage}
+                  onClick={() => setPreviewBackgroundMode("checkerboard")}
+                  title="透明棋盘格"
+                  type="button"
+                />
+                <button
+                  aria-label="黑色底色"
+                  aria-pressed={previewBackgroundMode === "black"}
+                  className="preview-background-swatch is-black"
+                  disabled={!sourceImage}
+                  onClick={() => setPreviewBackgroundMode("black")}
+                  title="黑色底色"
+                  type="button"
+                />
+                <button
+                  aria-label="白色底色"
+                  aria-pressed={previewBackgroundMode === "white"}
+                  className="preview-background-swatch is-white"
+                  disabled={!sourceImage}
+                  onClick={() => setPreviewBackgroundMode("white")}
+                  title="白色底色"
+                  type="button"
+                />
+                <label
+                  className={`custom-preview-background ${previewBackgroundMode === "custom" ? "is-active" : ""}`}
+                  title="自定义底色"
+                >
+                  <input
+                    aria-label="自定义预览底色"
+                    disabled={!sourceImage}
+                    onChange={(event) => {
+                      setCustomPreviewBackgroundColor(event.target.value.toUpperCase());
+                      setPreviewBackgroundMode("custom");
+                    }}
+                    onClick={() => setPreviewBackgroundMode("custom")}
+                    type="color"
+                    value={customPreviewBackgroundColor}
+                  />
+                </label>
+              </div>
+            </div>
+            {analysis && (
+              <div className="mask-summary">
+                <div><span>背景像素</span><strong>{analysis.stats.backgroundPixelCount.toLocaleString()}</strong></div>
+                <div>
+                  <span>占非透明像素</span>
+                  <strong>{(analysis.stats.opaquePixelCount === 0 ? 0 : analysis.stats.backgroundPixelCount / analysis.stats.opaquePixelCount * 100).toFixed(2)}%</strong>
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="module-section">
+            <div className="module-heading">
+              <span>06</span>
+              <div><h2>边缘半透</h2><small>边缘岛线性 RGB Alpha 反算</small></div>
+            </div>
+            <div className="edge-glow-control">
+              <div>
+                <label htmlFor="edge-glow-width">方向距离差值</label>
+                <output>{edgeGlowWidth.toFixed(3)}</output>
+              </div>
+              <input
+                disabled={!analysis || analysisStatus === "analyzing"}
+                id="edge-glow-width"
+                max="0.3"
+                min="0"
+                onChange={(event) => setEdgeGlowWidth(Number(event.target.value))}
+                step="0.001"
+                type="range"
+                value={edgeGlowWidth}
+              />
+            </div>
+            {analysis ? (
+              <div className="edge-glow-summary">
+                <div><span>边缘岛</span><strong>{analysis.edgeGlowStats.edgeIslandCount.toLocaleString()}</strong></div>
+                <div><span>辉光像素</span><strong>{analysis.edgeGlowStats.glowPixelCount.toLocaleString()}</strong></div>
+                <div><span>完成反算</span><strong>{analysis.edgeGlowStats.reconstructedPixelCount.toLocaleString()}</strong></div>
+                <div><span>未解决</span><strong>{analysis.edgeGlowStats.unresolvedGlowPixelCount.toLocaleString()}</strong></div>
+                <div><span>半透明像素</span><strong>{analysis.edgeGlowStats.semiTransparentPixelCount.toLocaleString()}</strong></div>
               </div>
             ) : (
-              <p className="empty-protection">尚未选择保护区域。</p>
+              <p className="empty-detail">等待背景蒙版结果。</p>
             )}
           </section>
 
-          <section className="panel-section palette-reduction-section">
-            <div className="section-title">
-              <h2>相似颜色替换</h2>
-              <span className="badge">像素规整</span>
+          <section className="module-section selected-pixel-section">
+            <div className="module-heading compact">
+              <span>PX</span>
+              <div><h2>选中像素</h2></div>
             </div>
-            <p className="help-text">在 OKLab 感知空间聚合相似颜色，并实际替换输出像素；透明色不计入颜色上限。</p>
-            <label className="toggle-row">
-              <input
-                checked={paletteReductionEnabled}
-                disabled={!sourceImage}
-                onChange={(event) => setPaletteReductionEnabled(event.target.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>启用相似颜色替换</strong>
-                <small>默认启用，不使用抖动，不产生额外噪点颜色。</small>
-              </span>
-            </label>
-            <label className="range-label" htmlFor="maximum-palette-colors">
-              <span>最大实体颜色数</span>
-              <output>{maximumPaletteColors}</output>
-            </label>
-            <input
-              disabled={!sourceImage || !paletteReductionEnabled}
-              id="maximum-palette-colors"
-              max="20"
-              min="8"
-              onChange={(event) => setMaximumPaletteColors(Number(event.target.value))}
-              step="1"
-              type="range"
-              value={maximumPaletteColors}
-            />
-            <p className="palette-reduction-note">输出使用原图中实际存在的代表色；不插值、不抖动，最终实体颜色数不会超过设定值。</p>
-            <div className={`processing-card is-${processingStatus}`}>
-              <label className="auto-preview-toggle">
-                <input
-                  checked={autoPreviewEnabled}
-                  disabled={!sourceImage}
-                  onChange={(event) => setAutoPreviewEnabled(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>参数停止变化后自动渲染</span>
-              </label>
-              <strong>
-                {!sourceImage && "导入图片后将自动生成预览"}
-                {sourceImage && processingStatus === "ready" && "高质量预览已是最新"}
-                {sourceImage && processingStatus === "dirty" && (
-                  autoPreviewEnabled
-                    ? "检测到修改，停止操作后将自动更新"
-                    : "参数或蒙版已修改，预览尚未更新"
-                )}
-                {sourceImage && processingStatus === "processing" && "正在执行全分辨率处理…"}
-              </strong>
-              {processingStats && processingStatus === "ready" && (
-                <small>
-                  {processingStats.originalColorCount.toLocaleString()} 色 → {processingStats.reducedColorCount.toLocaleString()} 色，
-                  替换 {processingStats.replacedColorPixels.toLocaleString()} px；恢复边缘 {processingStats.decontaminatedEdgePixels.toLocaleString()} px，
-                  半透明 {processingStats.semiTransparentPixels.toLocaleString()} px
-                </small>
-              )}
-              {processingStatus === "processing" ? (
-                <button onClick={cancelProcessing} type="button">取消</button>
-              ) : (
-                <button
-                  className="primary"
-                  disabled={!sourceImage}
-                  onClick={updateHighQualityPreview}
-                  type="button"
-                >
-                  强制高质量渲染
-                </button>
-              )}
-            </div>
-          </section>
-
-          <section className="panel-section palette-section">
-            <div className="section-title">
-              <h2>全部像素颜色</h2>
-              <span className="badge muted">{entityRgbColorCount.toLocaleString()} RGB 色</span>
-            </div>
-            <p className="help-text">按实体 RGB 合并统计；半透明像素计入对应颜色，完全透明背景不显示。</p>
-            <div className="palette-sort-control" aria-label="颜色排序">
-              <button
-                className={paletteSortMode === "frequency" ? "is-active" : ""}
-                onClick={() => setPaletteSortMode("frequency")}
-                type="button"
-              >
-                使用次数
-              </button>
-              <button
-                className={paletteSortMode === "dark-to-light" ? "is-active" : ""}
-                onClick={() => setPaletteSortMode("dark-to-light")}
-                type="button"
-              >
-                深 → 浅
-              </button>
-            </div>
-            <div className="palette-list">
-              {palette.length > 0 ? (
-                sortedPalette.map((color) => (
-                  <div className="palette-item" key={color.hex}>
-                    <span className="palette-swatch">
-                      <i style={{ backgroundColor: color.cssColor }} />
-                    </span>
-                    <code>{color.hex}</code>
-                    <small>{color.count.toLocaleString()} px</small>
-                  </div>
-                ))
-              ) : (
-                <p className="empty-palette">生成处理结果后显示全部像素颜色。</p>
-              )}
-            </div>
+            {selectedPixelDetail ? (
+              <dl className="pixel-details">
+                <div><dt>坐标</dt><dd><code>({selectedPixelDetail.x}, {selectedPixelDetail.y})</code></dd></div>
+                <div><dt>原始颜色</dt><dd><code>{selectedPixelDetail.sourceColor}</code></dd></div>
+                <div><dt>归并颜色</dt><dd><code>{selectedPixelDetail.mergedColor}</code></dd></div>
+                <div><dt>输入 Alpha</dt><dd><code>{selectedPixelDetail.alpha}</code></dd></div>
+                <div><dt>输出颜色</dt><dd><code>{selectedPixelDetail.outputColor}</code></dd></div>
+                <div><dt>输出 Alpha</dt><dd><code>{selectedPixelDetail.outputAlpha}</code></dd></div>
+                <div><dt>辉光岛</dt><dd><strong>{selectedPixelDetail.isGlow ? "是" : "否"}</strong></dd></div>
+                <div><dt>ΔL</dt><dd><code>{selectedPixelDetail.deltaLightness.toFixed(6)}</code></dd></div>
+                <div><dt>ΔC</dt><dd><code>{selectedPixelDetail.deltaChroma.toFixed(6)}</code></dd></div>
+                <div><dt>ΔH</dt><dd><code>{selectedPixelDetail.deltaHue.toFixed(6)}</code></dd></div>
+                <div><dt>方向距离</dt><dd><code>{selectedPixelDetail.distance.toFixed(6)}</code></dd></div>
+                <div><dt>分类</dt><dd><strong>{selectedPixelDetail.classification}</strong></dd></div>
+              </dl>
+            ) : (
+              <p className="empty-detail">在移动模式下点击图像像素。</p>
+            )}
           </section>
         </aside>
       </section>
-      {isClosePromptVisible && (
-        <div aria-modal="true" className="modal-backdrop" role="dialog">
-          <section className="close-dialog" aria-labelledby="close-dialog-title">
-            <p className="eyebrow">未保存的工作状态</p>
-            <h2 id="close-dialog-title">关闭前要保存工程吗？</h2>
-            <p>工程会保存原图、保护画笔、背景参数、缩放与画布位置。</p>
-            <div className="close-dialog-actions">
-              <button disabled={isSavingBeforeClose} onClick={() => void closeDesktopWindow()} type="button">
-                不保存
-              </button>
-              <button disabled={isSavingBeforeClose} onClick={() => setIsClosePromptVisible(false)} type="button">
-                取消
-              </button>
-              <button className="primary" disabled={isSavingBeforeClose} onClick={() => void saveAndClose()} type="button">
-                {isSavingBeforeClose ? "正在保存…" : "保存工程"}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
     </main>
   );
 }

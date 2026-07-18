@@ -30,7 +30,8 @@ describe("OKLab distance distribution", () => {
     assert.equal(distribution.transparentPixelCount, 1);
     assert.equal(distribution.counts.reduce((sum, count) => sum + count, 0), 3);
     assert.equal(distribution.counts[0], 2);
-    assert.ok(distribution.maximumDistance > 0.99);
+    assert.ok(distribution.maximumDistance > 0.49);
+    assert.ok(distribution.maximumDistance < 0.51);
   });
 
   it("rebins the full distribution using a user-defined interval", () => {

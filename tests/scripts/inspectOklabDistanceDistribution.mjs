@@ -118,7 +118,7 @@ function createResultMarkup(result, binWidth, index) {
           <div><dt>峰值数量</dt><dd data-role="peak-count">${formatCount(peakBin.count)}</dd></div>
         </dl>
         <div class="chart-wrap">
-          <canvas class="histogram" data-index="${index}" height="430" width="1000" role="img" aria-label="${safeName} 的全图 OKLab 距离分布；X 轴为与背景代表色的 OKLab 距离，Y 轴为像素数量"></canvas>
+          <canvas class="histogram" data-index="${index}" height="430" width="1000" role="img" aria-label="${safeName} 的全图方向加权 OKLCH 距离分布；X 轴为方向距离，Y 轴为像素数量"></canvas>
           <div class="chart-tooltip" hidden></div>
         </div>
       </section>
@@ -144,7 +144,7 @@ function createReport(results, errors, inputDirectory, backgroundColor, binWidth
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>全图 OKLab 距离分布</title>
+  <title>全图方向加权 OKLCH 距离分布</title>
   <style>
     :root { color-scheme: light dark; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; color: #202124; background: #F5F6F7; --chart-text: #263238; --chart-muted: #62676D; --chart-grid: #DCE1E4; --chart-bar: #2C8A67; --chart-active: #D59B2D; }
     * { box-sizing: border-box; }
@@ -201,16 +201,17 @@ function createReport(results, errors, inputDirectory, backgroundColor, binWidth
   <main>
     <section class="summary">
       <div class="summary-copy">
-        <h1>全图 OKLab 距离分布</h1>
+        <h1>全图方向加权 OKLCH 距离分布</h1>
         <p>${results.length} 张图片 · ${escapeHtml(generatedAt)}</p>
         <p>输入目录：<code>${escapeHtml(inputDirectory)}</code></p>
+        <p>距离模型：<code>sqrt((0.5ΔL)² + (2ΔC)² + (2ΔH)²)</code></p>
       </div>
       <div class="inputs">
         <div class="input-value"><span>背景代表色</span><strong class="swatch" style="--swatch-color:${backgroundHex};--swatch-text:${swatchTextColor}">${backgroundHex}</strong></div>
         <label class="input-value" for="bin-width-control"><span>区间宽度</span><input id="bin-width-control" min="${distributionResolution}" step="${distributionResolution}" type="number" value="${binWidth}"></label>
       </div>
     </section>
-    <section class="results" aria-label="全图 OKLab 距离分布列表">
+    <section class="results" aria-label="全图方向加权 OKLCH 距离分布列表">
       ${results.map((result, index) => createResultMarkup(result, binWidth, index)).join("\n")}
       ${errors.map(createErrorMarkup).join("\n")}
     </section>
@@ -312,7 +313,7 @@ function createReport(results, errors, inputDirectory, backgroundColor, binWidth
 
         context.fillStyle = colors.text;
         context.font = "600 13px Inter, Microsoft YaHei, system-ui, sans-serif";
-        context.fillText("与背景代表色的 OKLab 距离", chartMargin.left + plotWidth / 2, canvas.height - 12);
+        context.fillText("与背景代表色的方向加权 OKLCH 距离", chartMargin.left + plotWidth / 2, canvas.height - 12);
         context.save();
         context.translate(18, chartMargin.top + plotHeight / 2);
         context.rotate(-Math.PI / 2);
@@ -425,7 +426,7 @@ async function main() {
   const errors = [];
   console.log(`输入目录：${inputDirectory}`);
   console.log(`背景代表色：${backgroundHex}`);
-  console.log(`OKLab 距离区间宽度：${binWidth}`);
+  console.log(`方向加权 OKLCH 距离区间宽度：${binWidth}`);
   console.log("");
 
   for (const filePath of pngFiles) {
@@ -470,7 +471,7 @@ async function main() {
   console.log(`CSV 数据：${csvPath}`);
   if (shouldOpen) {
     await openReport(reportPath);
-    console.log("已打开 OKLab 距离分布窗口。");
+    console.log("已打开方向加权 OKLCH 距离分布窗口。");
   }
   if (errors.length > 0) process.exitCode = 1;
 }

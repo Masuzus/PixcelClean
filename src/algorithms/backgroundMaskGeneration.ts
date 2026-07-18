@@ -1,7 +1,8 @@
 import {
-  colorDistanceSquared,
   rgbToOklab,
 } from "./colorSpace.ts";
+import { classifyBackgroundDistances } from "./classifyBackgroundDistances.ts";
+import { directionalBackgroundDistance } from "./directionalBackgroundDistance.ts";
 import type { RgbColor, RgbaImageView } from "./types";
 
 export type BackgroundMaskResult = {
@@ -17,10 +18,9 @@ export function generateBackgroundMask(
 ): BackgroundMaskResult {
   const pixelCount = image.width * image.height;
   if (image.data.length !== pixelCount * 4) throw new Error("RGBA image data size does not match its dimensions.");
-  if (!Number.isFinite(threshold) || threshold < 0) throw new Error("Background threshold must be zero or greater.");
+  if (!Number.isFinite(threshold)) throw new Error("Background threshold must be finite.");
   if (protectedMask && protectedMask.length !== pixelCount) throw new Error("Protected mask size does not match the image.");
 
-  const backgroundMask = new Uint8Array(pixelCount);
   const distances = new Float32Array(pixelCount);
   const backgroundLab = rgbToOklab(...backgroundColor);
   const colorDistanceCache = new Map<number, number>();
@@ -31,15 +31,15 @@ export function generateBackgroundMask(
     const packedRgb = (image.data[offset] << 16) | (image.data[offset + 1] << 8) | image.data[offset + 2];
     let distance = colorDistanceCache.get(packedRgb);
     if (distance === undefined) {
-      distance = Math.sqrt(colorDistanceSquared(
+      distance = directionalBackgroundDistance(
         rgbToOklab(image.data[offset], image.data[offset + 1], image.data[offset + 2]),
         backgroundLab,
-      ));
+      );
       colorDistanceCache.set(packedRgb, distance);
     }
     distances[pixelIndex] = distance;
-    if (protectedMask?.[pixelIndex] !== 1 && distance <= threshold) backgroundMask[pixelIndex] = 1;
   }
 
+  const backgroundMask = classifyBackgroundDistances(image, distances, threshold, protectedMask);
   return { backgroundMask, distances };
 }

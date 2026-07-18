@@ -100,7 +100,7 @@ function findAutomaticThresholds(image: ImageData, backgroundLab: OklabColor): B
   const detectedLoose = tailEndIndex >= 0
     ? bins[tailEndIndex]?.start ?? automaticStrict + 0.008
     : distributionEndsInBackgroundRange
-      ? bins.at(-1)?.end ?? automaticStrict + 0.008
+      ? bins[bins.length - 1]?.end ?? automaticStrict + 0.008
       : automaticStrict + 0.008;
   return {
     strict: automaticStrict,

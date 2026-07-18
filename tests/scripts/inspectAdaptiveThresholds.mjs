@@ -5,6 +5,10 @@ import { PNG } from "pngjs";
 import { getAdaptiveBackgroundThresholds } from "../../src/algorithms/adaptiveBackgroundThresholds.ts";
 import { rgbToOklab } from "../../src/algorithms/colorSpace.ts";
 import { collectOklabDistanceDistribution } from "../../src/algorithms/oklabDistanceDistribution.ts";
+import {
+  defaultLocalColorSimilarityThreshold,
+  mergeLocalColorIslands,
+} from "../../src/algorithms/localColorIslands.ts";
 
 const projectRoot = path.resolve(import.meta.dirname, "../..");
 const inputDirectory = path.join(projectRoot, "tests/input/images");
@@ -26,11 +30,16 @@ function parseBackgroundColor(value) {
 function parseArguments(argumentsList) {
   let backgroundColor = null;
   let shouldOpen = true;
+  let localColorThreshold = defaultLocalColorSimilarityThreshold;
 
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     if (argument === "--no-open") {
       shouldOpen = false;
+    } else if (argument === "--local-threshold") {
+      localColorThreshold = Number(argumentsList[index + 1]);
+      if (!Number.isFinite(localColorThreshold) || localColorThreshold < 0) throw new Error("--local-threshold 需要大于或等于 0 的数值。");
+      index += 1;
     } else if (argument === "--background") {
       backgroundColor = parseBackgroundColor(argumentsList[index + 1]);
       index += 1;
@@ -42,7 +51,7 @@ function parseArguments(argumentsList) {
   if (!backgroundColor) {
     throw new Error("缺少背景颜色。请添加 --background \"#1C1523\"。");
   }
-  return { backgroundColor, inputDirectory, shouldOpen };
+  return { backgroundColor, inputDirectory, localColorThreshold, shouldOpen };
 }
 
 async function collectPngFiles(directory) {
@@ -108,7 +117,7 @@ function createResultMarkup(result, index) {
           </div>
         </section>
       </div>
-      <section class="distribution" aria-label="${safeName} 的全图 OKLab 距离分布">
+      <section class="distribution" aria-label="${safeName} 的全图方向加权 OKLCH 距离分布">
         <div class="distribution-stats">
           <span>统计像素 <strong>${result.distribution.pixelCount.toLocaleString("zh-CN")}</strong></span>
           <span>距离范围 <strong>${result.distribution.minimumDistance.toFixed(6)} - ${result.distribution.maximumDistance.toFixed(6)}</strong></span>
@@ -124,7 +133,7 @@ function createResultMarkup(result, index) {
           </div>
         </div>
         <div class="chart-wrap">
-          <canvas class="histogram" data-index="${index}" height="430" width="1000" role="img" aria-label="全图像素到背景代表色的 OKLab 距离直方图，标有 strict 和 loose"></canvas>
+          <canvas class="histogram" data-index="${index}" height="430" width="1000" role="img" aria-label="全图像素到背景代表色的方向加权 OKLCH 距离直方图，标有 strict 和 loose"></canvas>
           <div class="chart-tooltip" hidden></div>
         </div>
       </section>
@@ -233,6 +242,7 @@ function createReport(results, errors, inputDirectory, backgroundColor) {
         <h1>自适应双阈值测试结果</h1>
         <p>${results.length} 张图片 · ${escapeHtml(generatedAt)}</p>
         <p>输入目录：<code>${escapeHtml(inputDirectory)}</code></p>
+        <p>距离模型：<code>sqrt((0.5ΔL)² + (2ΔC)² + (2ΔH)²)</code></p>
       </div>
       <div class="inputs">
         <div class="input-value"><span>输入背景色</span><div class="swatch" style="--swatch-color:${backgroundHex};--swatch-text:${textColor}" role="img" aria-label="输入背景色 ${backgroundHex}">${backgroundHex}</div></div>
@@ -369,7 +379,7 @@ function createReport(results, errors, inputDirectory, backgroundColor) {
         context.fillStyle = colors.text;
         context.font = "600 13px Inter, Microsoft YaHei, system-ui, sans-serif";
         context.textAlign = "center";
-        context.fillText("与背景代表色的 OKLab 距离", chartMargin.left + plotWidth / 2, canvas.height - 12);
+        context.fillText("与背景代表色的方向加权 OKLCH 距离", chartMargin.left + plotWidth / 2, canvas.height - 12);
         context.save();
         context.translate(18, chartMargin.top + plotHeight / 2);
         context.rotate(-Math.PI / 2);
@@ -521,7 +531,7 @@ async function openReport(reportFilePath) {
 }
 
 async function main() {
-  const { backgroundColor, inputDirectory, shouldOpen } = parseArguments(process.argv.slice(2));
+  const { backgroundColor, inputDirectory, localColorThreshold, shouldOpen } = parseArguments(process.argv.slice(2));
   await mkdir(inputDirectory, { recursive: true });
   const pngFiles = await collectPngFiles(inputDirectory);
   if (pngFiles.length === 0) {
@@ -537,6 +547,7 @@ async function main() {
   const errors = [];
   console.log(`输入目录：${inputDirectory}`);
   console.log(`背景颜色：${backgroundHex}`);
+  console.log(`近似颜色阈值：${localColorThreshold}`);
   console.log("");
 
   for (const filePath of pngFiles) {
@@ -549,8 +560,9 @@ async function main() {
         height: png.height,
         data: new Uint8ClampedArray(png.data),
       };
-      const thresholds = getAdaptiveBackgroundThresholds(image, backgroundLab);
-      const distribution = collectOklabDistanceDistribution(image, backgroundLab, distributionResolution);
+      const merged = mergeLocalColorIslands(image, localColorThreshold);
+      const thresholds = getAdaptiveBackgroundThresholds(merged.image, backgroundLab);
+      const distribution = collectOklabDistanceDistribution(merged.image, backgroundLab, distributionResolution);
       results.push({
         relativePath,
         width: png.width,
@@ -565,6 +577,7 @@ async function main() {
       console.log(`  loose:  ${thresholds.loose.toFixed(6)}`);
       console.log(`  统计像素: ${distribution.pixelCount}`);
       console.log(`  距离范围: ${distribution.minimumDistance.toFixed(6)} - ${distribution.maximumDistance.toFixed(6)}`);
+      console.log(`  岛屿: ${merged.stats.islandCount}，替换像素: ${merged.stats.replacedPixelCount}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push({ relativePath, message });

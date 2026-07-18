@@ -52,6 +52,12 @@ describe("generateBackgroundMask", () => {
     assert.equal(result.distances[0], 0);
   });
 
+  it("allows a negative selected threshold to classify every opaque pixel as foreground", () => {
+    const image = createImage([[65, 38, 27, 255]]);
+    const result = generateBackgroundMask(image, [65, 38, 27], -0.001);
+    assert.deepEqual([...result.backgroundMask], [0]);
+  });
+
   it("validates image and protection mask dimensions", () => {
     const image = createImage([[65, 38, 27, 255]]);
     assert.throws(() => generateBackgroundMask(image, [65, 38, 27], 0.006, new Uint8Array(2)));
