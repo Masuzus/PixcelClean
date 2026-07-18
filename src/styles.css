@@ -52,6 +52,8 @@ code, output { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; f
   font-weight: 600;
 }
 .topbar button:hover { background: #465049; }
+.topbar .button.primary { color: #173328; background: #8ed1b2; border-color: #8ed1b2; }
+.topbar .button.primary:hover:not(:disabled) { background: #a4ddc2; }
 .status-chip {
   min-width: 70px;
   padding: 5px 8px;

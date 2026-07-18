@@ -6,6 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import ImageViewport, {
   type ImageView,
   type InteractionMode,
@@ -108,6 +110,37 @@ async function loadImage(file: File): Promise<ImageData> {
   }
 }
 
+function createPngBlob(image: ImageData): Promise<Blob> {
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext("2d");
+  if (!context) return Promise.reject(new Error("浏览器无法创建导出画布。"));
+  context.putImageData(image, 0, 0);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("无法编码 PNG 文件。"));
+    }, "image/png");
+  });
+}
+
+function createExportFileName(sourceFileName: string): string {
+  const baseName = sourceFileName.replace(/\.png$/i, "").trim() || "pixel-clean";
+  return `${baseName}-cleaned.png`;
+}
+
+function downloadBlob(blob: Blob, fileName: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 function createPreviewImage(
   source: ImageData,
   backgroundMask: Uint8Array,
@@ -163,6 +196,7 @@ function App() {
   const [selectedPixel, setSelectedPixel] = useState<PixelPosition | null>(null);
   const [imageView, setImageView] = useState<ImageView>(initialView);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -419,6 +453,37 @@ function App() {
     void importFile(event.dataTransfer.files[0]);
   };
 
+  const exportProcessedPng = async () => {
+    if (!analysis || isExporting) return;
+    const exportFileName = createExportFileName(fileName);
+    setIsExporting(true);
+    setStatusMessage("正在编码透明 PNG…");
+    try {
+      const blob = await createPngBlob(analysis.edgeImage);
+      if (isTauri()) {
+        const selectedPath = await save({
+          defaultPath: exportFileName,
+          filters: [{ name: "PNG 图片", extensions: ["png"] }],
+          title: "导出透明 PNG",
+        });
+        if (!selectedPath) {
+          setStatusMessage("已取消导出。");
+          return;
+        }
+        const targetPath = selectedPath.toLowerCase().endsWith(".png") ? selectedPath : `${selectedPath}.png`;
+        const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+        await invoke("write_binary_file", { path: targetPath, bytes });
+      } else {
+        downloadBlob(blob, exportFileName);
+      }
+      setStatusMessage(`已导出 ${exportFileName}。`);
+    } catch (error) {
+      setStatusMessage(`导出失败：${error instanceof Error ? error.message : "未知错误"}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const paintProtection = (from: PixelPosition, to: PixelPosition, shouldProtect: boolean) => {
     if (!sourceImage) return;
     setProtectedMask((current) => paintProtectionMask(
@@ -515,6 +580,14 @@ function App() {
         </div>
         <div className="topbar-actions">
           <span className={`status-chip is-${analysisStatus}`}>{processingLabel}</span>
+          <button
+            className="button primary"
+            disabled={!analysis || analysisStatus !== "ready" || isExporting}
+            onClick={() => void exportProcessedPng()}
+            type="button"
+          >
+            {isExporting ? "导出中" : "导出 PNG"}
+          </button>
           <button className="button secondary" onClick={() => fileInputRef.current?.click()} type="button">
             导入 PNG
           </button>
