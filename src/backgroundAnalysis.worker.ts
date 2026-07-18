@@ -94,7 +94,6 @@ self.onmessage = (event: MessageEvent<BackgroundWorkerRequest>) => {
       request.selectedThreshold,
       protectedMask,
     );
-    const stats = collectBackgroundMaskStats(activeAnalysis.image, backgroundMask, protectedMask);
     const edgeGlow = reconstructEdgeGlow(
       activeAnalysis.image,
       activeAnalysis.islandIds,
@@ -105,7 +104,8 @@ self.onmessage = (event: MessageEvent<BackgroundWorkerRequest>) => {
       protectedMask,
       request.edgeGlowWidth,
     );
-    const backgroundMaskBuffer = backgroundMask.buffer as ArrayBuffer;
+    const stats = collectBackgroundMaskStats(activeAnalysis.image, edgeGlow.backgroundMask, protectedMask);
+    const backgroundMaskBuffer = edgeGlow.backgroundMask.buffer as ArrayBuffer;
     const edgeImage = new Uint8ClampedArray(edgeGlow.image.data).buffer as ArrayBuffer;
     const glowMask = edgeGlow.glowMask.buffer as ArrayBuffer;
     const response: ClassifyBackgroundSuccess = {

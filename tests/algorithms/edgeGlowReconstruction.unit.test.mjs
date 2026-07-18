@@ -35,6 +35,7 @@ describe("reconstructEdgeGlow", () => {
     );
 
     assert.deepEqual([...result.glowMask], [0, 1, 1, 0]);
+    assert.deepEqual([...result.backgroundMask], [1, 0, 0, 0]);
     const pixels = pixelsOf(result.image);
     assert.deepEqual(pixels[0], [0, 0, 0, 0]);
     assert.deepEqual(pixels[1].slice(0, 3), [255, 255, 255]);
@@ -65,7 +66,7 @@ describe("reconstructEdgeGlow", () => {
     assert.deepEqual(pixelsOf(result.image)[2], [188, 188, 188, 255]);
   });
 
-  it("keeps unresolved glow pixels unchanged when no foreground anchor exists", () => {
+  it("classifies glow pixels as background when no reliable foreground anchor exists", () => {
     const result = reconstructEdgeGlow(
       createImage([[0, 0, 0, 255], [80, 80, 80, 255]]),
       new Int32Array([0, 1]),
@@ -75,8 +76,9 @@ describe("reconstructEdgeGlow", () => {
       0.02,
     );
 
-    assert.deepEqual(pixelsOf(result.image)[1], [80, 80, 80, 255]);
-    assert.equal(result.stats.unresolvedGlowPixelCount, 1);
+    assert.deepEqual(pixelsOf(result.image)[1], [0, 0, 0, 0]);
+    assert.deepEqual([...result.backgroundMask], [1, 1]);
+    assert.equal(result.stats.fallbackBackgroundPixelCount, 1);
   });
 
   it("does not treat non-boundary foreground or existing semi-transparency as baked glow", () => {

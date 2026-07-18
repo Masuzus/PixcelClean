@@ -84,7 +84,7 @@ export function analyzeBackground(
   const selectedThreshold = options.selectedThreshold ?? (thresholds.strict + thresholds.loose) / 2;
   if (!Number.isFinite(selectedThreshold)) throw new Error("Selected background threshold must be finite.");
   const protectedMask = options.protectedMask ?? null;
-  const { backgroundMask, distances } = generateBackgroundMask(
+  const { backgroundMask: initialBackgroundMask, distances } = generateBackgroundMask(
     mergedImage,
     backgroundColor,
     selectedThreshold,
@@ -94,7 +94,7 @@ export function analyzeBackground(
     mergedImage,
     localColorResult.islandIds,
     backgroundColor,
-    backgroundMask,
+    initialBackgroundMask,
     distances,
     selectedThreshold,
     protectedMask,
@@ -111,8 +111,8 @@ export function analyzeBackground(
     backgroundColor,
     thresholds,
     selectedThreshold,
-    backgroundMask,
+    backgroundMask: edgeGlow.backgroundMask,
     distances,
-    stats: collectBackgroundMaskStats(mergedImage, backgroundMask, protectedMask),
+    stats: collectBackgroundMaskStats(mergedImage, edgeGlow.backgroundMask, protectedMask),
   };
 }

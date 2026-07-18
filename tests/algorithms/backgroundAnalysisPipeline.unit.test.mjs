@@ -92,4 +92,25 @@ describe("analyzeBackground", () => {
     assert.equal(disabled.edgeGlowStats.edgeIslandCount, 0);
     assert.equal(enabled.edgeGlowStats.edgeIslandCount, 1);
   });
+
+  it("includes glow pixels without a reliable anchor in the final background mask", () => {
+    const result = analyzeBackground({
+      width: 2,
+      height: 1,
+      data: new Uint8ClampedArray([
+        0, 0, 0, 255,
+        80, 80, 80, 255,
+      ]),
+    }, {
+      backgroundColor: [0, 0, 0],
+      localColorThreshold: 0,
+      selectedThreshold: 0.02,
+      edgeGlowWidth: 0.3,
+    });
+
+    assert.deepEqual([...result.backgroundMask], [1, 1]);
+    assert.deepEqual([...result.edgeImage.data], [0, 0, 0, 0, 0, 0, 0, 0]);
+    assert.equal(result.stats.backgroundPixelCount, 2);
+    assert.equal(result.edgeGlowStats.fallbackBackgroundPixelCount, 1);
+  });
 });

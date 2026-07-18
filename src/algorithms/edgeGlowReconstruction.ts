@@ -1,7 +1,7 @@
 import { clamp, srgbToLinear } from "./colorSpace.ts";
 import type { RgbColor, RgbaImageView } from "./types.ts";
 
-export const edgeGlowAlgorithmVersion = "edge-glow-v1";
+export const edgeGlowAlgorithmVersion = "edge-glow-v2";
 export const defaultEdgeGlowWidth = 0.1;
 
 export type EdgeGlowStats = {
@@ -9,12 +9,13 @@ export type EdgeGlowStats = {
   edgeIslandCount: number;
   glowPixelCount: number;
   reconstructedPixelCount: number;
-  unresolvedGlowPixelCount: number;
+  fallbackBackgroundPixelCount: number;
   semiTransparentPixelCount: number;
 };
 
 export type EdgeGlowResult = {
   image: RgbaImageView;
+  backgroundMask: Uint8Array;
   glowMask: Uint8Array;
   stats: EdgeGlowStats;
 };
@@ -183,13 +184,14 @@ export function reconstructEdgeGlow(
   }
 
   const output = new Uint8ClampedArray(image.data);
+  const outputBackgroundMask = new Uint8Array(backgroundMask);
   const linearBackground: [number, number, number] = [
     srgbToLinear(backgroundColor[0] / 255),
     srgbToLinear(backgroundColor[1] / 255),
     srgbToLinear(backgroundColor[2] / 255),
   ];
   let reconstructedPixelCount = 0;
-  let unresolvedGlowPixelCount = 0;
+  let fallbackBackgroundPixelCount = 0;
 
   for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
     const offset = pixelIndex * 4;
@@ -207,7 +209,12 @@ export function reconstructEdgeGlow(
     const anchors = collectLocalAnchors(image, pixelIndex, backgroundMask, glowMask, distances);
     const fit = fitForegroundAnchor(linearRgb(image, pixelIndex), linearBackground, anchors);
     if (!fit) {
-      unresolvedGlowPixelCount += 1;
+      output[offset] = 0;
+      output[offset + 1] = 0;
+      output[offset + 2] = 0;
+      output[offset + 3] = 0;
+      outputBackgroundMask[pixelIndex] = 1;
+      fallbackBackgroundPixelCount += 1;
       continue;
     }
     output[offset] = fit.anchor.rgb[0];
@@ -230,13 +237,14 @@ export function reconstructEdgeGlow(
 
   return {
     image: { width: image.width, height: image.height, data: output },
+    backgroundMask: outputBackgroundMask,
     glowMask,
     stats: {
       edgeSeedPixelCount,
       edgeIslandCount: edgeIslands.size,
       glowPixelCount,
       reconstructedPixelCount,
-      unresolvedGlowPixelCount,
+      fallbackBackgroundPixelCount,
       semiTransparentPixelCount,
     },
   };

@@ -909,7 +909,7 @@ function App() {
                 <div><span>边缘岛</span><strong>{analysis.edgeGlowStats.edgeIslandCount.toLocaleString()}</strong></div>
                 <div><span>辉光像素</span><strong>{analysis.edgeGlowStats.glowPixelCount.toLocaleString()}</strong></div>
                 <div><span>完成反算</span><strong>{analysis.edgeGlowStats.reconstructedPixelCount.toLocaleString()}</strong></div>
-                <div><span>未解决</span><strong>{analysis.edgeGlowStats.unresolvedGlowPixelCount.toLocaleString()}</strong></div>
+                <div><span>判为背景</span><strong>{analysis.edgeGlowStats.fallbackBackgroundPixelCount.toLocaleString()}</strong></div>
                 <div><span>半透明像素</span><strong>{analysis.edgeGlowStats.semiTransparentPixelCount.toLocaleString()}</strong></div>
               </div>
             ) : (
